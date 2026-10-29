@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-apk:
-    runs-on: ubuntu-22.04 # Switching to 22.04 removes the annoying Node 20 deprecation warnings!
+    runs-on: ubuntu-22.04 
     
     steps:
       - name: Checkout repository
@@ -37,8 +37,13 @@ jobs:
         run: |
           keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Music8481, OU=App, O=Music8481, C=IN"
 
-      - name: Create TWA Manifest
+      - name: Generate Local Icon & TWA Manifest
         run: |
+          # 1. Create a local 512x512 icon inside the server. Zero external web dependencies!
+          sudo apt-get install -y imagemagick
+          convert -size 512x512 xc:"#1DB954" -fill white -gravity center -pointsize 72 -annotate +0+0 "Music" icon.png
+          
+          # 2. Create the configuration file
           cat <<EOF > twa-manifest.json
           {
             "packageId": "com.music8481.app",
@@ -50,8 +55,8 @@ jobs:
             "navigationColor": "#000000",
             "backgroundColor": "#ffffff",
             "startUrl": "/",
-            "iconUrl": "https://ui-avatars.com/api/?name=Music&background=1DB954&color=fff&size=512&format=png",
-            "maskableIconUrl": "https://ui-avatars.com/api/?name=Music&background=1DB954&color=fff&size=512&format=png",
+            "iconUrl": "http://localhost:8080/icon.png",
+            "maskableIconUrl": "http://localhost:8080/icon.png",
             "splashScreenFadeOutDuration": 300,
             "signingKey": {
               "path": "android.keystore",
@@ -64,11 +69,17 @@ jobs:
           EOF
 
       - name: Generate Android Project
-        run: bubblewrap update 
+        run: |
+          # 3. Serve the icon we just created locally on a background port
+          python3 -m http.server 8080 &
+          sleep 3
+          
+          # 4. Generate the project and explicitly SKIP the version upgrade prompt!
+          bubblewrap update --skipVersionUpgrade
 
       - name: Build APK
         env:
-          # This securely auto-fills the passwords so the builder doesn't crash waiting for input
+          # Automatically securely passes passwords so Bubblewrap doesn't freeze asking for them
           BUBBLEWRAP_KEYSTORE_PASSWORD: password123
           BUBBLEWRAP_KEY_PASSWORD: password123
         run: bubblewrap build --skipPwaValidation
