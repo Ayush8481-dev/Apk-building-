@@ -31,13 +31,8 @@ jobs:
       - name: Configure Bubblewrap & Fix SDK Path Bug
         run: |
           mkdir -p ~/.bubblewrap
-          
-          # CRITICAL FIX: Trick Bubblewrap into thinking the legacy SDK structure still exists 
-          # so it doesn't crash during the build step!
           sudo mkdir -p ${ANDROID_HOME}/tools
           sudo mkdir -p ${ANDROID_HOME}/bin
-          
-          # Save the configuration
           echo "{\"jdkPath\": \"${JAVA_HOME}\", \"androidSdkPath\": \"${ANDROID_HOME}\"}" > ~/.bubblewrap/config.json
 
       - name: Generate Android Keystore (For App Signing)
@@ -50,7 +45,7 @@ jobs:
           sudo apt-get install -y imagemagick
           convert -size 512x512 xc:"#1DB954" icon.png
           
-          # 2. Create the configuration file
+          # 2. Create the configuration file (Now with explicit features and notifications to prevent grammar errors!)
           cat <<EOF > twa-manifest.json
           {
             "packageId": "com.music8481.app",
@@ -71,7 +66,13 @@ jobs:
             },
             "appVersionName": "1.0.0",
             "appVersionCode": 1,
-            "fallbackType": "customtabs"
+            "fallbackType": "customtabs",
+            "enableNotifications": true,
+            "features": {},
+            "alphaDependencies": {
+              "enabled": false
+            },
+            "shortcuts": []
           }
           EOF
 
@@ -86,7 +87,6 @@ jobs:
 
       - name: Build APK
         env:
-          # Automatically passes passwords so Bubblewrap doesn't freeze asking for them
           BUBBLEWRAP_KEYSTORE_PASSWORD: password123
           BUBBLEWRAP_KEY_PASSWORD: password123
         run: bubblewrap build --skipPwaValidation
