@@ -39,9 +39,9 @@ jobs:
 
       - name: Generate Local Icon & TWA Manifest
         run: |
-          # 1. Create a local 512x512 icon inside the server. Zero external web dependencies!
+          # 1. Create a solid green 512x512 icon. No fonts, no text, no crashing!
           sudo apt-get install -y imagemagick
-          convert -size 512x512 xc:"#1DB954" -fill white -gravity center -pointsize 72 -annotate +0+0 "Music" icon.png
+          convert -size 512x512 xc:"#1DB954" icon.png
           
           # 2. Create the configuration file
           cat <<EOF > twa-manifest.json
@@ -70,16 +70,16 @@ jobs:
 
       - name: Generate Android Project
         run: |
-          # 3. Serve the icon we just created locally on a background port
+          # 3. Serve the icon on a background port
           python3 -m http.server 8080 &
           sleep 3
           
-          # 4. Generate the project and explicitly SKIP the version upgrade prompt!
+          # 4. Generate the project, skipping version upgrades
           bubblewrap update --skipVersionUpgrade
 
       - name: Build APK
         env:
-          # Automatically securely passes passwords so Bubblewrap doesn't freeze asking for them
+          # Automatically passes passwords so Bubblewrap doesn't freeze asking for them
           BUBBLEWRAP_KEYSTORE_PASSWORD: password123
           BUBBLEWRAP_KEY_PASSWORD: password123
         run: bubblewrap build --skipPwaValidation
