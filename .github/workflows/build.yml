@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-apk:
-    runs-on: ubuntu-24.04 # Fixes the Ubuntu migration notice
+    runs-on: ubuntu-24.04 
     
     steps:
       - name: Checkout repository
@@ -14,10 +14,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Fixes Node deprecation warning
+          node-version: '22' # Fixes Node 20 deprecation warning entirely
 
       - name: Setup Java
-        uses: actions/setup-java@v5 # Fixes the setup-java v4 deprecation
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -72,12 +72,12 @@ jobs:
           EOF
 
       - name: Generate Android Project & Logo
-        # Fix for Exit Code 1: Server and Generator are now in the exact same step so the background process survives!
+        # Replaced the invalid "generate" command with the correct "update" command
         run: |
           wget -q -O icon.png "https://ui-avatars.com/api/?name=Music8481&background=1DB954&color=fff&size=512&format=png"
           python3 -m http.server 8080 &
           sleep 3
-          yes | bubblewrap generate
+          yes | bubblewrap update 
 
       - name: Build APK
         run: bubblewrap build --skipPwaValidation --keyPassword password123
