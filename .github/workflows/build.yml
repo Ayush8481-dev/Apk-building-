@@ -28,9 +28,16 @@ jobs:
       - name: Install Bubblewrap CLI
         run: npm install -g @bubblewrap/cli
 
-      - name: Create Bubblewrap Config
+      - name: Configure Bubblewrap & Fix SDK Path Bug
         run: |
           mkdir -p ~/.bubblewrap
+          
+          # CRITICAL FIX: Trick Bubblewrap into thinking the legacy SDK structure still exists 
+          # so it doesn't crash during the build step!
+          sudo mkdir -p ${ANDROID_HOME}/tools
+          sudo mkdir -p ${ANDROID_HOME}/bin
+          
+          # Save the configuration
           echo "{\"jdkPath\": \"${JAVA_HOME}\", \"androidSdkPath\": \"${ANDROID_HOME}\"}" > ~/.bubblewrap/config.json
 
       - name: Generate Android Keystore (For App Signing)
@@ -39,7 +46,7 @@ jobs:
 
       - name: Generate Local Icon & TWA Manifest
         run: |
-          # 1. Create a solid green 512x512 icon. No fonts, no text, no crashing!
+          # 1. Create a solid green 512x512 icon perfectly offline
           sudo apt-get install -y imagemagick
           convert -size 512x512 xc:"#1DB954" icon.png
           
