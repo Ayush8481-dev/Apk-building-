@@ -31,8 +31,9 @@ jobs:
       - name: Configure Bubblewrap & Fix SDK Path Bug
         run: |
           mkdir -p ~/.bubblewrap
-          sudo mkdir -p ${ANDROID_HOME}/tools
-          sudo mkdir -p ${ANDROID_HOME}/bin
+          # Removed 'sudo' so the directories remain owned by the GitHub 'runner' user
+          mkdir -p ${ANDROID_HOME}/tools
+          mkdir -p ${ANDROID_HOME}/bin
           echo "{\"jdkPath\": \"${JAVA_HOME}\", \"androidSdkPath\": \"${ANDROID_HOME}\"}" > ~/.bubblewrap/config.json
 
       - name: Generate Android Keystore (For App Signing)
@@ -41,11 +42,9 @@ jobs:
 
       - name: Generate Local Icon & TWA Manifest
         run: |
-          # 1. Create a solid green 512x512 icon perfectly offline
           sudo apt-get install -y imagemagick
           convert -size 512x512 xc:"#1DB954" icon.png
           
-          # 2. Create the configuration file (Now with explicit features and notifications to prevent grammar errors!)
           cat <<EOF > twa-manifest.json
           {
             "packageId": "com.music8481.app",
@@ -78,12 +77,19 @@ jobs:
 
       - name: Generate Android Project
         run: |
-          # 3. Serve the icon on a background port
           python3 -m http.server 8080 &
           sleep 3
-          
-          # 4. Generate the project, skipping version upgrades
           bubblewrap update --skipVersionUpgrade
+
+      # --- NEW STEP TO FIX GRADLE CRASHES ---
+      - name: Fix Gradle Daemon & Memory Issues
+        run: |
+          # 1. Lower JVM Memory allocation to prevent 'Could not reserve enough space'
+          sed -i 's/-Xmx1536m/-Xmx1024m/g' gradle.properties
+          
+          # 2. Disable Daemon and VFS watching to prevent CI timeout/crash bugs
+          echo "org.gradle.daemon=false" >> gradle.properties
+          echo "org.gradle.vfs.watch=false" >> gradle.properties
 
       - name: Build APK
         env:
