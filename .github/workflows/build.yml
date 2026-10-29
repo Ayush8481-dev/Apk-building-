@@ -1,11 +1,12 @@
 name: Build Music8481 APK
 
 on:
-  workflow_dispatch: # Allows you to trigger the build manually
+  workflow_dispatch:
 
 jobs:
   build-apk:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Fixes the Ubuntu migration notice
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -13,13 +14,16 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20' # Fixes Node deprecation warning
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5 # Fixes the setup-java v4 deprecation
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Accept Android SDK Licenses
+        run: yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Install Bubblewrap CLI
         run: npm install -g @bubblewrap/cli
@@ -30,18 +34,9 @@ jobs:
           cat <<EOF > ~/.bubblewrap/config.json
           {
             "jdkPath": "${JAVA_HOME}",
-            "androidSdkPath": "/usr/local/lib/android/sdk"
+            "androidSdkPath": "${ANDROID_HOME}"
           }
           EOF
-
-      - name: Generate App Logo & Host locally
-        # Bubblewrap strictly requires a 512x512 PNG. 
-        # This automatically creates one with your app name so the build doesn't fail.
-        run: |
-          sudo apt-get install -y imagemagick
-          convert -size 512x512 xc:"#1DB954" -font DejaVu-Sans -pointsize 64 -fill white -gravity center -annotate +0+0 "Music8481" icon.png
-          python3 -m http.server 8080 &
-          sleep 2
 
       - name: Generate Android Keystore (For App Signing)
         run: |
@@ -76,8 +71,13 @@ jobs:
           }
           EOF
 
-      - name: Generate Android Project
-        run: yes | bubblewrap generate
+      - name: Generate Android Project & Logo
+        # Fix for Exit Code 1: Server and Generator are now in the exact same step so the background process survives!
+        run: |
+          wget -q -O icon.png "https://ui-avatars.com/api/?name=Music8481&background=1DB954&color=fff&size=512&format=png"
+          python3 -m http.server 8080 &
+          sleep 3
+          yes | bubblewrap generate
 
       - name: Build APK
         run: bubblewrap build --skipPwaValidation --keyPassword password123
