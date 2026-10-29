@@ -1,0 +1,89 @@
+name: Build Music8481 APK
+
+on:
+  workflow_dispatch: # Allows you to trigger the build manually
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Bubblewrap CLI
+        run: npm install -g @bubblewrap/cli
+
+      - name: Create Bubblewrap Config
+        run: |
+          mkdir -p ~/.bubblewrap
+          cat <<EOF > ~/.bubblewrap/config.json
+          {
+            "jdkPath": "${JAVA_HOME}",
+            "androidSdkPath": "/usr/local/lib/android/sdk"
+          }
+          EOF
+
+      - name: Generate App Logo & Host locally
+        # Bubblewrap strictly requires a 512x512 PNG. 
+        # This automatically creates one with your app name so the build doesn't fail.
+        run: |
+          sudo apt-get install -y imagemagick
+          convert -size 512x512 xc:"#1DB954" -font DejaVu-Sans -pointsize 64 -fill white -gravity center -annotate +0+0 "Music8481" icon.png
+          python3 -m http.server 8080 &
+          sleep 2
+
+      - name: Generate Android Keystore (For App Signing)
+        run: |
+          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Music8481, OU=App, O=Music8481, C=IN"
+
+      - name: Create TWA Manifest
+        run: |
+          cat <<EOF > twa-manifest.json
+          {
+            "packageId": "com.music8481.app",
+            "host": "ayushgaana.vercel.app",
+            "name": "Music8481",
+            "launcherName": "Music8481",
+            "display": "standalone",
+            "themeColor": "#000000",
+            "navigationColor": "#000000",
+            "backgroundColor": "#ffffff",
+            "startUrl": "/",
+            "iconUrl": "http://localhost:8080/icon.png",
+            "maskableIconUrl": "http://localhost:8080/icon.png",
+            "splashScreenFadeOutDuration": 300,
+            "signingKey": {
+              "path": "android.keystore",
+              "alias": "android"
+            },
+            "appVersionName": "1.0.0",
+            "appVersionCode": 1,
+            "shortcuts": [],
+            "generatorApp": "bubblewrap-cli",
+            "features": {},
+            "fallbackType": "customtabs"
+          }
+          EOF
+
+      - name: Generate Android Project
+        run: yes | bubblewrap generate
+
+      - name: Build APK
+        run: bubblewrap build --skipPwaValidation --keyPassword password123
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Music8481-APK
+          path: app-release-signed.apk
