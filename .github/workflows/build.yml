@@ -33,7 +33,18 @@ jobs:
       - name: Initialize Capacitor Config & Offline UI
         run: |
           mkdir -p www
-          echo "<html><body>Loading Music8481...</body></html>" > www/index.html
+          cat <<EOF > www/index.html
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+            <title>Loading...</title>
+            <style>body, html { margin: 0; padding: 0; width: 100vw; height: 100vh; background: #000; }</style>
+          </head>
+          <body></body>
+          </html>
+          EOF
           
           cat <<EOF > www/error.html
           <!DOCTYPE html>
@@ -42,7 +53,7 @@ jobs:
             <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
             <title>Offline</title>
             <style>
-              body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+              body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
               .spinner { width: 50px; height: 50px; border: 3px solid rgba(29, 185, 84, 0.3); border-top-color: #1DB954; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
               @keyframes spin { 100% { transform: rotate(360deg); } }
               h1 { font-size: 24px; margin: 0 0 10px; }
@@ -53,7 +64,7 @@ jobs:
           <body>
             <div class="spinner"></div>
             <h1>You're Offline</h1>
-            <p>Please check your internet connection to stream music.</p>
+            <p>Please check your internet connection.</p>
             <button onclick="window.location.href='https://ayushgaana.vercel.app'">Retry Connection</button>
           </body>
           </html>
@@ -101,21 +112,15 @@ jobs:
               <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />
               <uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\" />
           \`;
-          const vivoTags = \`
-              <meta-data android:name=\"com.vivo.dynamic.island.support\" android:value=\"true\" />
-              <meta-data android:name=\"android.media.playback.ALWAYS_SHOW_LOCK_SCREEN_CONTROLS\" android:value=\"true\" />
-              <meta-data android:name=\"com.vivo.music.lockscreen.support\" android:value=\"true\" />
-          \`;
           if (!xml.includes('android.permission.WAKE_LOCK')) {
               xml = xml.replace('<application', perms + '\n    <application');
               xml = xml.replace('<application', '<application android:hardwareAccelerated=\"true\" android:largeHeap=\"true\"');
               xml = xml.replace('<activity', '<activity android:supportsPictureInPicture=\"true\"');
-              xml = xml.replace('</application>', vivoTags + '\n    </application>');
               fs.writeFileSync(path, xml);
           }
           "
 
-      # DEEP FIX 1: Use shortEdges for perfect Moto Edge / Landscape Punch Hole Rendering
+      # DEEP FIX 1: The Multi-Theme Hard Override (Disables System UI boundaries entirely for ALL states)
       - name: Force Android App Theme to Edge-to-Edge
         run: |
           node -e "
@@ -125,19 +130,22 @@ jobs:
               let xml = fs.readFileSync(path, 'utf8');
               const edgeToEdge = \`
                   <item name=\"android:windowLayoutInDisplayCutoutMode\">shortEdges</item>
+                  <item name=\"android:windowTranslucentStatus\">true</item>
+                  <item name=\"android:windowTranslucentNavigation\">true</item>
                   <item name=\"android:statusBarColor\">@android:color/transparent</item>
                   <item name=\"android:navigationBarColor\">@android:color/transparent</item>
-                  <item name=\"android:windowDrawsSystemBarBackgrounds\">true</item>
-                  <item name=\"android:enforceNavigationBarContrast\">false</item>
-                  <item name=\"android:enforceStatusBarContrast\">false</item>
+                  <item name=\"android:windowDrawsSystemBarBackgrounds\">false</item>
+                  <item name=\"android:windowFullscreen\">true</item>
+                  <item name=\"android:windowContentOverlay\">@null</item>
               \`;
-              xml = xml.replace('</style>', edgeToEdge + '\n</style>');
+              // Applies to both AppTheme and LaunchTheme simultaneously
+              xml = xml.replace(/<\/style>/g, edgeToEdge + '\n</style>');
               fs.writeFileSync(path, xml);
           }
           "
 
-      # DEEP FIX 2: WindowInsetsController (API 30+) + viewport-fit Web Injection
-      - name: Inject Native Premium Engine (Punch Hole & PiP)
+      # DEEP FIX 2 & 3: Layout No Limits + The Inset Nullifier
+      - name: Inject Native Premium Engine (Punch Hole Nuclear Fix)
         run: |
           cat <<EOF > android/app/src/main/java/com/music8481/app/MainActivity.java
           package com.music8481.app;
@@ -150,6 +158,8 @@ jobs:
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
           import androidx.core.view.WindowCompat;
+          import androidx.core.view.WindowInsetsCompat;
+          import androidx.core.view.WindowInsetsControllerCompat;
           import com.getcapacitor.BridgeActivity;
           
           import android.webkit.WebView;
@@ -157,6 +167,8 @@ jobs:
           import android.webkit.WebChromeClient;
           import android.webkit.JavascriptInterface;
           import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.WindowInsets;
           import android.widget.FrameLayout;
           import android.content.Context;
           import android.os.PowerManager;
@@ -166,8 +178,6 @@ jobs:
           import android.content.pm.ActivityInfo;
           import android.util.Rational;
           import android.content.res.Configuration;
-          import android.view.WindowInsets;
-          import android.view.WindowInsetsController;
 
           public class MainActivity extends BridgeActivity {
               private PowerManager.WakeLock wakeLock;
@@ -199,22 +209,30 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   
-                  // TRUE EDGE TO EDGE SETUP
-                  getWindow().setStatusBarColor(Color.TRANSPARENT);
-                  getWindow().setNavigationBarColor(Color.TRANSPARENT);
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      getWindow().setNavigationBarContrastEnforced(false);
-                      getWindow().setStatusBarContrastEnforced(false);
-                  }
+                  // ==========================================
+                  // 🚨 THE NUCLEAR EDGE-TO-EDGE INJECTION 🚨
+                  // ==========================================
                   
-                  // shortEdges forces the Android System to let content bleed into the landscape camera punch-hole
+                  // 1. Force the OS to layout the window OUTSIDE normal screen limits (Overrides Moto Constraints)
+                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+
+                  // 2. Allow drawing directly inside the punch hole array
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                      WindowManager.LayoutParams attributes = getWindow().getAttributes();
-                      attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      getWindow().setAttributes(attributes);
+                      WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
+                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      getWindow().setAttributes(layoutParams);
                   }
-                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
                   
+                  // 3. Disable OS Level padding handling
+                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
+                  // 4. THE INSET NULLIFIER: We intercept the padding Android tries to give the Capacitor WebView and DESTROY it.
+                  getWindow().getDecorView().setOnApplyWindowInsetsListener((v, insets) -> {
+                      // We return the insets back to Android WITHOUT applying them. 
+                      // This forces the black bars to physically disappear from all Views.
+                      return insets;
+                  });
+
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                       if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                           ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
@@ -240,63 +258,64 @@ jobs:
                       webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
                       settings.setDomStorageEnabled(true);
                       
-                      // Forcing WebView to ignore system windows paddings internally
+                      // Explicitly force WebView container to stretch
                       webView.setFitsSystemWindows(false);
                       webView.setPadding(0,0,0,0);
+                      
+                      // Optional: force parents to avoid paddings
+                      if (webView.getParent() instanceof ViewGroup) {
+                          ((ViewGroup) webView.getParent()).setFitsSystemWindows(false);
+                          ((ViewGroup) webView.getParent()).setClipToPadding(false);
+                      }
 
                       webView.addJavascriptInterface(new WebAppInterface(), "AndroidApp");
                       
-                      // DYNAMIC VIEWPORT-FIT=COVER INJECTION 
-                      // This forces Chromium to completely fill the Punch Hole area from the Web side!
+                      // EXTREME VIEWPORT-FIT INJECTION: Forces HTML to bleed into corners via Javascript
                       webView.postDelayed(() -> {
                           webView.evaluateJavascript(
                               "setInterval(function() {" +
                               "  var meta = document.querySelector('meta[name=\"viewport\"]');" +
-                              "  if (meta && !meta.content.includes('viewport-fit=cover')) {" +
-                              "      meta.content += ', viewport-fit=cover';" +
+                              "  var content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';" +
+                              "  if (meta && meta.content !== content) {" +
+                              "      meta.content = content;" +
                               "  } else if (!meta) {" +
                               "      var m = document.createElement('meta');" +
                               "      m.name = 'viewport';" +
-                              "      m.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';" +
+                              "      m.content = content;" +
                               "      document.head.appendChild(m);" +
                               "  }" +
+                              "  document.documentElement.style.padding = '0';" +
+                              "  document.documentElement.style.margin = '0';" +
+                              "  document.body.style.padding = '0';" +
+                              "  document.body.style.margin = '0';" +
                               "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
                               "  var hasVideo = iframe !== null;" +
                               "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
-                              "}, 1000);", null);
-                      }, 3000);
+                              "}, 500);", null);
+                      }, 2000);
 
                       final WebChromeClient originalClient = webView.getWebChromeClient();
                       webView.setWebChromeClient(new WebChromeClient() {
                           private View mCustomView;
                           private WebChromeClient.CustomViewCallback mCustomViewCallback;
-                          private int mOriginalSystemUiVisibility;
 
                           @Override
                           public void onShowCustomView(View view, CustomViewCallback callback) {
                               if (mCustomView != null) { onHideCustomView(); return; }
                               mCustomView = view;
                               isVideoFullscreen = true;
-                              mOriginalSystemUiVisibility = getWindow().getDecorView().getSystemUiVisibility();
                               mCustomViewCallback = callback;
                               
                               runOnUiThread(() -> updatePiPParams(true));
                               setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
-                              // ANDROID 11+ NATIVE IMMERSIVE CUTOUT FULLSCREEN
-                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                  WindowInsetsController controller = getWindow().getInsetsController();
-                                  if (controller != null) {
-                                      controller.hide(WindowInsets.Type.systemBars());
-                                      controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                                  }
-                              } else {
-                                  getWindow().getDecorView().setSystemUiVisibility(
-                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                                          View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                                          View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-                              }
+                              // Enforce Ultimate Native Fullscreen via modern WindowInsetsController
+                              WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+                              windowInsetsController.hide(WindowInsetsCompat.Type.systemBars());
+                              windowInsetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
 
+                              // Ensure Video Frame doesn't listen to paddings
+                              mCustomView.setFitsSystemWindows(false);
                               ((FrameLayout) getWindow().getDecorView()).addView(mCustomView, new FrameLayout.LayoutParams(-1, -1));
                           }
 
@@ -309,14 +328,9 @@ jobs:
                               runOnUiThread(() -> updatePiPParams(isVideoModeActive));
                               setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
                               
-                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                  WindowInsetsController controller = getWindow().getInsetsController();
-                                  if (controller != null) {
-                                      controller.show(WindowInsets.Type.systemBars());
-                                  }
-                              } else {
-                                  getWindow().getDecorView().setSystemUiVisibility(mOriginalSystemUiVisibility);
-                              }
+                              // Restore System Bars visibility but KEEP Edge-To-Edge transparent layout
+                              WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+                              windowInsetsController.show(WindowInsetsCompat.Type.systemBars());
                               
                               if (mCustomViewCallback != null) { mCustomViewCallback.onCustomViewHidden(); mCustomViewCallback = null; }
                           }
