@@ -22,7 +22,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install Capacitor Plugins
+      - name: Install Capacitor & Premium Plugins
         run: |
           npm init -y
           npm install @capacitor/core
@@ -30,21 +30,19 @@ jobs:
           npm install @capgo/capacitor-media-session
           npm install @capacitor/splash-screen
 
-      - name: Initialize Capacitor & UI
+      - name: Initialize Capacitor Config & Offline UI
         run: |
           mkdir -p www
           echo "<html><body>Loading Music8481...</body></html>" > www/index.html
           
-          # Offline UI
           cat <<EOF > www/error.html
           <!DOCTYPE html>
           <html lang="en">
           <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+            <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
             <title>Offline</title>
             <style>
-              body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+              body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
               .spinner { width: 50px; height: 50px; border: 3px solid rgba(29, 185, 84, 0.3); border-top-color: #1DB954; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
               @keyframes spin { 100% { transform: rotate(360deg); } }
               h1 { font-size: 24px; margin: 0 0 10px; }
@@ -90,7 +88,7 @@ jobs:
       - name: Add Native Android Platform
         run: npx cap add android
 
-      - name: Inject Permissions, Audio Category & Vivo/MIUI Meta-Data
+      - name: Inject Permissions & Vivo Meta-Data
         run: |
           node -e "
           const fs = require('fs');
@@ -103,27 +101,48 @@ jobs:
               <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />
               <uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\" />
           \`;
-          const metaTags = \`
-              <!-- Hardware Integration for Lockscreen & Dynamic Island -->
+          const vivoTags = \`
               <meta-data android:name=\"com.vivo.dynamic.island.support\" android:value=\"true\" />
               <meta-data android:name=\"android.media.playback.ALWAYS_SHOW_LOCK_SCREEN_CONTROLS\" android:value=\"true\" />
               <meta-data android:name=\"com.vivo.music.lockscreen.support\" android:value=\"true\" />
-              <meta-data android:name=\"miui.lockscreen.media.support\" android:value=\"true\" />
           \`;
           if (!xml.includes('android.permission.WAKE_LOCK')) {
               xml = xml.replace('<application', perms + '\n    <application');
-              // Declare as Audio Category for native color-blending notifications
-              xml = xml.replace('<application', '<application android:appCategory=\"audio\" android:hardwareAccelerated=\"true\" android:largeHeap=\"true\"');
-              xml = xml.replace('</application>', metaTags + '\n    </application>');
+              xml = xml.replace('<application', '<application android:hardwareAccelerated=\"true\" android:largeHeap=\"true\"');
+              xml = xml.replace('<activity', '<activity android:supportsPictureInPicture=\"true\"');
+              xml = xml.replace('</application>', vivoTags + '\n    </application>');
               fs.writeFileSync(path, xml);
           }
           "
 
-      - name: Inject Fullscreen PunchHole Edge-to-Edge & Auto-Rotate Engine
+      # DEEP FIX 1: Use shortEdges for perfect Moto Edge / Landscape Punch Hole Rendering
+      - name: Force Android App Theme to Edge-to-Edge
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = 'android/app/src/main/res/values/styles.xml';
+          if (fs.existsSync(path)) {
+              let xml = fs.readFileSync(path, 'utf8');
+              const edgeToEdge = \`
+                  <item name=\"android:windowLayoutInDisplayCutoutMode\">shortEdges</item>
+                  <item name=\"android:statusBarColor\">@android:color/transparent</item>
+                  <item name=\"android:navigationBarColor\">@android:color/transparent</item>
+                  <item name=\"android:windowDrawsSystemBarBackgrounds\">true</item>
+                  <item name=\"android:enforceNavigationBarContrast\">false</item>
+                  <item name=\"android:enforceStatusBarContrast\">false</item>
+              \`;
+              xml = xml.replace('</style>', edgeToEdge + '\n</style>');
+              fs.writeFileSync(path, xml);
+          }
+          "
+
+      # DEEP FIX 2: WindowInsetsController (API 30+) + viewport-fit Web Injection
+      - name: Inject Native Premium Engine (Punch Hole & PiP)
         run: |
           cat <<EOF > android/app/src/main/java/com/music8481/app/MainActivity.java
           package com.music8481.app;
 
+          import android.graphics.Color;
           import android.os.Build;
           import android.os.Bundle;
           import android.Manifest;
@@ -136,6 +155,7 @@ jobs:
           import android.webkit.WebView;
           import android.webkit.WebSettings;
           import android.webkit.WebChromeClient;
+          import android.webkit.JavascriptInterface;
           import android.view.View;
           import android.widget.FrameLayout;
           import android.content.Context;
@@ -144,39 +164,66 @@ jobs:
           import android.view.WindowManager;
           import android.app.PictureInPictureParams;
           import android.content.pm.ActivityInfo;
+          import android.util.Rational;
+          import android.content.res.Configuration;
+          import android.view.WindowInsets;
+          import android.view.WindowInsetsController;
 
           public class MainActivity extends BridgeActivity {
               private PowerManager.WakeLock wakeLock;
               private boolean isVideoFullscreen = false;
+              private boolean isVideoModeActive = false; 
+
+              private void updatePiPParams(boolean enable) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+                      builder.setAspectRatio(new Rational(16, 9));
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                          builder.setAutoEnterEnabled(enable);
+                      }
+                      setPictureInPictureParams(builder.build());
+                  }
+              }
+
+              public class WebAppInterface {
+                  @JavascriptInterface
+                  public void setVideoMode(boolean isVideo) {
+                      if (isVideoModeActive != isVideo) {
+                          isVideoModeActive = isVideo;
+                          runOnUiThread(() -> updatePiPParams(isVideoFullscreen || isVideoModeActive));
+                      }
+                  }
+              }
 
               @Override
               public void onCreate(Bundle savedInstanceState) {
-                  // CORRECT HARDWARE PUNCH-HOLE EDGE-TO-EDGE INJECTION
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                      WindowManager.LayoutParams attribs = getWindow().getAttributes();
-                      attribs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      getWindow().setAttributes(attribs);
-                  }
-                  
                   super.onCreate(savedInstanceState);
                   
-                  // Force WebView to draw behind Status/Nav bars completely
+                  // TRUE EDGE TO EDGE SETUP
+                  getWindow().setStatusBarColor(Color.TRANSPARENT);
+                  getWindow().setNavigationBarColor(Color.TRANSPARENT);
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      getWindow().setNavigationBarContrastEnforced(false);
+                      getWindow().setStatusBarContrastEnforced(false);
+                  }
+                  
+                  // shortEdges forces the Android System to let content bleed into the landscape camera punch-hole
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                      WindowManager.LayoutParams attributes = getWindow().getAttributes();
+                      attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      getWindow().setAttributes(attributes);
+                  }
                   WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
                   
-                  // Media Notification & Media Playback Permissions for Android 13/14+
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                       if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                           ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
                       }
                   }
 
-                  // Hardware Audio Binding
                   AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                  if (audioManager != null) {
-                      setVolumeControlStream(AudioManager.STREAM_MUSIC);
-                  }
+                  if (audioManager != null) setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
-                  // Maintain Audio Sync Pipeline when Screen turns off
                   PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
                   wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Music8481::BackgroundAudioLock");
                   wakeLock.acquire();
@@ -186,14 +233,38 @@ jobs:
               public void onStart() {
                   super.onStart();
                   if (this.bridge != null && this.bridge.getWebView() != null) {
-                      WebView webView = this.bridge.getWebView();
+                      final WebView webView = this.bridge.getWebView();
                       WebSettings settings = webView.getSettings();
                       
                       settings.setMediaPlaybackRequiresUserGesture(false); 
                       webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
                       settings.setDomStorageEnabled(true);
-                      settings.setJavaScriptEnabled(true);
-                      webView.setBackgroundColor(0x00000000); // Prevents white flashes during edge-to-edge load
+                      
+                      // Forcing WebView to ignore system windows paddings internally
+                      webView.setFitsSystemWindows(false);
+                      webView.setPadding(0,0,0,0);
+
+                      webView.addJavascriptInterface(new WebAppInterface(), "AndroidApp");
+                      
+                      // DYNAMIC VIEWPORT-FIT=COVER INJECTION 
+                      // This forces Chromium to completely fill the Punch Hole area from the Web side!
+                      webView.postDelayed(() -> {
+                          webView.evaluateJavascript(
+                              "setInterval(function() {" +
+                              "  var meta = document.querySelector('meta[name=\"viewport\"]');" +
+                              "  if (meta && !meta.content.includes('viewport-fit=cover')) {" +
+                              "      meta.content += ', viewport-fit=cover';" +
+                              "  } else if (!meta) {" +
+                              "      var m = document.createElement('meta');" +
+                              "      m.name = 'viewport';" +
+                              "      m.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';" +
+                              "      document.head.appendChild(m);" +
+                              "  }" +
+                              "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
+                              "  var hasVideo = iframe !== null;" +
+                              "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
+                              "}, 1000);", null);
+                      }, 3000);
 
                       final WebChromeClient originalClient = webView.getWebChromeClient();
                       webView.setWebChromeClient(new WebChromeClient() {
@@ -203,25 +274,28 @@ jobs:
 
                           @Override
                           public void onShowCustomView(View view, CustomViewCallback callback) {
-                              if (mCustomView != null) {
-                                  onHideCustomView();
-                                  return;
-                              }
+                              if (mCustomView != null) { onHideCustomView(); return; }
                               mCustomView = view;
                               isVideoFullscreen = true;
                               mOriginalSystemUiVisibility = getWindow().getDecorView().getSystemUiVisibility();
                               mCustomViewCallback = callback;
+                              
+                              runOnUiThread(() -> updatePiPParams(true));
+                              setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
-                              // FIX: FORCE LANDSCAPE ROTATION ON FULLSCREEN VIDEO
-                              setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
-
-                              getWindow().getDecorView().setSystemUiVisibility(
-                                      View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                                      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                                      View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                                      View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                                      View.SYSTEM_UI_FLAG_FULLSCREEN |
-                                      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+                              // ANDROID 11+ NATIVE IMMERSIVE CUTOUT FULLSCREEN
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                  WindowInsetsController controller = getWindow().getInsetsController();
+                                  if (controller != null) {
+                                      controller.hide(WindowInsets.Type.systemBars());
+                                      controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                                  }
+                              } else {
+                                  getWindow().getDecorView().setSystemUiVisibility(
+                                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                                          View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                                          View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+                              }
 
                               ((FrameLayout) getWindow().getDecorView()).addView(mCustomView, new FrameLayout.LayoutParams(-1, -1));
                           }
@@ -232,25 +306,64 @@ jobs:
                               mCustomView = null;
                               isVideoFullscreen = false;
                               
-                              // REVERT TO PORTRAIT
+                              runOnUiThread(() -> updatePiPParams(isVideoModeActive));
                               setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
                               
-                              getWindow().getDecorView().setSystemUiVisibility(mOriginalSystemUiVisibility);
-                              if (mCustomViewCallback != null) {
-                                  mCustomViewCallback.onCustomViewHidden();
-                                  mCustomViewCallback = null;
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                  WindowInsetsController controller = getWindow().getInsetsController();
+                                  if (controller != null) {
+                                      controller.show(WindowInsets.Type.systemBars());
+                                  }
+                              } else {
+                                  getWindow().getDecorView().setSystemUiVisibility(mOriginalSystemUiVisibility);
                               }
+                              
+                              if (mCustomViewCallback != null) { mCustomViewCallback.onCustomViewHidden(); mCustomViewCallback = null; }
                           }
+                          @Override
+                          public void onPermissionRequest(android.webkit.PermissionRequest request) { if (originalClient != null) originalClient.onPermissionRequest(request); }
+                          @Override
+                          public boolean onShowFileChooser(WebView webView, android.webkit.ValueCallback<android.net.Uri[]> filePathCallback, FileChooserParams fileChooserParams) { return originalClient != null && originalClient.onShowFileChooser(webView, filePathCallback, fileChooserParams); }
+                          @Override
+                          public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) { return originalClient != null && originalClient.onConsoleMessage(consoleMessage); }
                       });
+                  }
+              }
+
+              @Override
+              public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+                  if (this.bridge != null && this.bridge.getWebView() != null) {
+                      WebView webView = this.bridge.getWebView();
+                      if (isInPictureInPictureMode) {
+                          webView.evaluateJavascript(
+                              "var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
+                              "if(iframe) {" +
+                              "  iframe.style.position = 'fixed';" +
+                              "  iframe.style.top = '0'; iframe.style.left = '0';" +
+                              "  iframe.style.width = '100vw'; iframe.style.height = '100vh';" +
+                              "  iframe.style.zIndex = '999999';" +
+                              "  iframe.setAttribute('data-pip', 'true');" +
+                              "}", null);
+                      } else {
+                          webView.evaluateJavascript(
+                              "var iframe = document.querySelector('iframe[data-pip=\"true\"]');" +
+                              "if(iframe) {" +
+                              "  iframe.style.position = '';" +
+                              "  iframe.style.top = ''; iframe.style.left = '';" +
+                              "  iframe.style.width = '100%'; iframe.style.height = '100%';" +
+                              "  iframe.style.zIndex = '';" +
+                              "  iframe.removeAttribute('data-pip');" +
+                              "}", null);
+                      }
                   }
               }
 
               @Override
               public void onUserLeaveHint() {
                   super.onUserLeaveHint();
-                  if (isVideoFullscreen && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      PictureInPictureParams params = new PictureInPictureParams.Builder().build();
-                      enterPictureInPictureMode(params);
+                  if ((isVideoFullscreen || isVideoModeActive) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                      try { enterPictureInPictureMode(new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build()); } catch (Exception e) {}
                   }
               }
 
@@ -266,8 +379,22 @@ jobs:
               @Override
               public void onDestroy() {
                   super.onDestroy();
-                  if (wakeLock != null && wakeLock.isHeld()) {
-                      wakeLock.release();
+                  if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+              }
+          }
+          EOF
+
+      - name: Fix Kotlin Duplicate Classes (Gradle Bug)
+        run: |
+          cat <<EOF >> android/app/build.gradle
+          
+          dependencies {
+              constraints {
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
+                      because("kotlin-stdlib-jdk7 is now a part of kotlin-stdlib")
+                  }
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
+                      because("kotlin-stdlib-jdk8 is now a part of kotlin-stdlib")
                   }
               }
           }
@@ -282,19 +409,26 @@ jobs:
           convert -size 2732x2732 xc:"#000000" assets/icon.png -gravity center -composite assets/splash.png
           npx @capacitor/assets generate --android
 
-      - name: Fix Gradle Build Config
+      - name: Fix Gradle Daemon & Memory Issues (CI Stability)
         run: |
           echo "org.gradle.daemon=false" >> android/gradle.properties
           echo "org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
 
-      - name: Build & Sign APK
+      - name: Generate Android Keystore (For App Signing)
         run: |
-          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Music, OU=App, C=IN"
-          cd android
-          ./gradlew assembleRelease -Pandroid.injected.signing.store.file=${{ github.workspace }}/android.keystore -Pandroid.injected.signing.store.password=password123 -Pandroid.injected.signing.key.alias=android -Pandroid.injected.signing.key.password=password123
+          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Music8481, OU=App, O=Music8481, C=IN"
 
-      - name: Upload APK
+      - name: Build & Auto-Sign Android APK (Release)
+        run: |
+          cd android
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=${{ github.workspace }}/android.keystore \
+            -Pandroid.injected.signing.store.password=password123 \
+            -Pandroid.injected.signing.key.alias=android \
+            -Pandroid.injected.signing.key.password=password123
+
+      - name: Upload Independent APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Music8481-Premium-APK
+          name: Music8481-Independent-APK
           path: android/app/build/outputs/apk/release/app-release.apk
