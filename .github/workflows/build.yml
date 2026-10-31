@@ -70,12 +70,13 @@ jobs:
           </html>
           EOF
           
-          npx cap init Music8481 com.spotify.music --web-dir www
+          # Initialize with .music extension
+          npx cap init Music8481 com.music8481.music --web-dir www
 
           rm capacitor.config.ts || true
           cat <<EOF > capacitor.config.json
           {
-            "appId": "com.spotify.music",
+            "appId": "com.music8481.music",
             "appName": "Music8481",
             "webDir": "www",
             "server": {
@@ -99,7 +100,7 @@ jobs:
       - name: Add Native Android Platform
         run: npx cap add android
 
-      - name: Inject Permissions & Vivo Meta-Data
+      - name: Inject Permissions & Hardware Acceleration
         run: |
           node -e "
           const fs = require('fs');
@@ -114,38 +115,36 @@ jobs:
           \`;
           if (!xml.includes('android.permission.WAKE_LOCK')) {
               xml = xml.replace('<application', perms + '\n    <application');
+              // Maximum UI thread hardware rendering + Large heap buffer
               xml = xml.replace('<application', '<application android:hardwareAccelerated=\"true\" android:largeHeap=\"true\"');
               xml = xml.replace('<activity', '<activity android:supportsPictureInPicture=\"true\"');
               fs.writeFileSync(path, xml);
           }
           "
 
-      - name: Force Android App Theme to Edge-to-Edge
+      - name: Configure Android App Theme (Portrait Black Bars)
         run: |
           node -e "
           const fs = require('fs');
           const path = 'android/app/src/main/res/values/styles.xml';
           if (fs.existsSync(path)) {
               let xml = fs.readFileSync(path, 'utf8');
-              const edgeToEdge = \`
-                  <item name=\"android:windowLayoutInDisplayCutoutMode\">shortEdges</item>
-                  <item name=\"android:windowTranslucentStatus\">true</item>
-                  <item name=\"android:windowTranslucentNavigation\">true</item>
-                  <item name=\"android:statusBarColor\">@android:color/transparent</item>
-                  <item name=\"android:navigationBarColor\">@android:color/transparent</item>
-                  <item name=\"android:windowDrawsSystemBarBackgrounds\">false</item>
-                  <item name=\"android:windowFullscreen\">true</item>
-                  <item name=\"android:windowContentOverlay\">@null</item>
+              const themeConfig = \`
+                  <item name=\"android:statusBarColor\">@android:color/black</item>
+                  <item name=\"android:navigationBarColor\">@android:color/black</item>
+                  <item name=\"android:windowDrawsSystemBarBackgrounds\">true</item>
               \`;
-              xml = xml.replace(/<\/style>/g, edgeToEdge + '\n</style>');
+              xml = xml.replace(/<\/style>/g, themeConfig + '\n</style>');
               fs.writeFileSync(path, xml);
           }
           "
 
-      - name: Inject Native Premium Engine & DOM Isolation
+      - name: Inject Native Premium Engine & Dynamic DOM Isolation
         run: |
-          cat <<EOF > android/app/src/main/java/com/spotify/music/MainActivity.java
-          package com.spotify.music;
+          mkdir -p android/app/src/main/java/com/music8481/music/
+          
+          cat <<EOF > android/app/src/main/java/com/music8481/music/MainActivity.java
+          package com.music8481.music;
 
           import android.graphics.Color;
           import android.os.Build;
@@ -206,19 +205,13 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   
-                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                  // 🔥 MAX HARDWARE ACCELERATION FOR LOW-END DEVICES
+                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
 
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                      WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
-                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      getWindow().setAttributes(layoutParams);
-                  }
-                  
-                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-
-                  getWindow().getDecorView().setOnApplyWindowInsetsListener((v, insets) -> {
-                      return insets;
-                  });
+                  // Set standard Portrait Black Bars & Prevent Content Overlap
+                  WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+                  getWindow().setStatusBarColor(Color.BLACK);
+                  getWindow().setNavigationBarColor(Color.BLACK);
 
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                       if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -242,8 +235,12 @@ jobs:
                       WebSettings settings = webView.getSettings();
                       
                       settings.setMediaPlaybackRequiresUserGesture(false); 
+                      
+                      // Maximize Hardware Render Layer on WebView
                       webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
                       settings.setDomStorageEnabled(true);
+                      settings.setDatabaseEnabled(true);
+                      settings.setCacheMode(WebSettings.LOAD_DEFAULT);
                       
                       webView.setFitsSystemWindows(false);
                       webView.setPadding(0,0,0,0);
@@ -257,7 +254,6 @@ jobs:
                       
                       webView.postDelayed(() -> {
                           webView.evaluateJavascript(
-                              // ── EXISTING VIEWPORT / PiP DETECTION LOOP ──
                               "setInterval(function() {" +
                               "  var meta = document.querySelector('meta[name=\"viewport\"]');" +
                               "  var content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';" +
@@ -276,41 +272,7 @@ jobs:
                               "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
                               "  var hasVideo = iframe !== null;" +
                               "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
-                              "}, 500);" +
-                              // ── MEDIA SESSION PLUGIN DRIVER ──
-                              // Explicitly set playback state and wire play/pause handlers.
-                              // The WebView cannot auto-detect media on Android.
-                              "(function() {" +
-                              "  if (window._mediaSessionDriver) return;" +
-                              "  window._mediaSessionDriver = true;" +
-                              "  function syncMediaSession() {" +
-                              "    if (!window.Capacitor || !window.Capacitor.Plugins) return;" +
-                              "    var MediaSession = window.Capacitor.Plugins.MediaSession;" +
-                              "    if (!MediaSession || !MediaSession.setPlaybackState) return;" +
-                              "    var media = document.querySelector('video, audio');" +
-                              "    if (!media) {" +
-                              "      MediaSession.setPlaybackState({ playbackState: 'none' });" +
-                              "      return;" +
-                              "    }" +
-                              "    var state = media.paused ? 'paused' : 'playing';" +
-                              "    MediaSession.setPlaybackState({ playbackState: state });" +
-                              "    MediaSession.setActionHandler({ action: 'play' }, function() {" +
-                              "      media.play();" +
-                              "    });" +
-                              "    MediaSession.setActionHandler({ action: 'pause' }, function() {" +
-                              "      media.pause();" +
-                              "    });" +
-                              "    MediaSession.setMetadata({" +
-                              "      title: document.title || 'Music8481'," +
-                              "      artist: 'Music8481'," +
-                              "      album: 'Music8481'," +
-                              "      artwork: []" +
-                              "    });" +
-                              "  }" +
-                              "  setInterval(syncMediaSession, 1000);" +
-                              "  document.addEventListener('play', syncMediaSession, true);" +
-                              "  document.addEventListener('pause', syncMediaSession, true);" +
-                              "})();", null);
+                              "}, 500);", null);
                       }, 2000);
 
                       final WebChromeClient originalClient = webView.getWebChromeClient();
@@ -328,10 +290,19 @@ jobs:
                               runOnUiThread(() -> updatePiPParams(true));
                               setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
+                              // Enable Edge-to-Edge Immersive for Video
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                  WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
+                                  layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                                  getWindow().setAttributes(layoutParams);
+                              }
+                              WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
                               WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
                               windowInsetsController.hide(WindowInsetsCompat.Type.systemBars());
                               windowInsetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
 
+                              mCustomView.setBackgroundColor(Color.BLACK);
                               mCustomView.setFitsSystemWindows(false);
                               ((FrameLayout) getWindow().getDecorView()).addView(mCustomView, new FrameLayout.LayoutParams(-1, -1));
                           }
@@ -344,6 +315,16 @@ jobs:
                               
                               runOnUiThread(() -> updatePiPParams(isVideoModeActive));
                               setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
+                              
+                              // Restore Standard Portrait UI & Black System Bars
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                  WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
+                                  layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                                  getWindow().setAttributes(layoutParams);
+                              }
+                              WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+                              getWindow().setStatusBarColor(Color.BLACK);
+                              getWindow().setNavigationBarColor(Color.BLACK);
                               
                               WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
                               windowInsetsController.show(WindowInsetsCompat.Type.systemBars());
@@ -426,11 +407,9 @@ jobs:
               @Override
               public void onPause() {
                   super.onPause();
-                  // ✅ CORRECTED: Pause the WebView, do NOT resume it.
-                  // Resuming the WebView in onPause prevented the foreground
-                  // media service from taking over when the app went to background.
                   if (this.bridge != null && this.bridge.getWebView() != null) {
-                      this.bridge.getWebView().onPause();
+                      this.bridge.getWebView().resumeTimers();
+                      this.bridge.getWebView().onResume(); 
                   }
               }
 
