@@ -145,7 +145,7 @@ jobs:
       - name: Inject Native Premium Engine & DOM Isolation
         run: |
           cat <<EOF > android/app/src/main/java/com/music8481/app/MainActivity.java
-          package com.music8481.app;
+          package com.spotify.music;
 
           import android.graphics.Color;
           import android.os.Build;
