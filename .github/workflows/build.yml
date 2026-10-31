@@ -142,7 +142,7 @@ jobs:
           }
           "
 
-      - name: Inject Native Premium Engine (PiP Controls, True Edge-to-Edge & Downloads)
+      - name: Inject Native Premium Engine (Exact File Downloads & True Edge-to-Edge)
         run: |
           mkdir -p android/app/src/main/java/com/music8481/music/
           
@@ -215,7 +215,6 @@ jobs:
                           builder.setAutoEnterEnabled(enable);
                       }
                       
-                      // Inject Play/Pause Media Control to PiP Window
                       ArrayList<RemoteAction> actions = new ArrayList<>();
                       Intent intent = new Intent(ACTION_MEDIA_CONTROL);
                       intent.putExtra(EXTRA_CONTROL_TYPE, 1);
@@ -251,8 +250,8 @@ jobs:
                               int notifId = (int) System.currentTimeMillis();
                               NotificationCompat.Builder builder = new NotificationCompat.Builder(MainActivity.this, channelId)
                                   .setSmallIcon(android.R.drawable.stat_sys_download)
-                                  .setContentTitle("Downloading " + filename)
-                                  .setContentText("0%")
+                                  .setContentTitle(filename) // EXACT FILENAME INJECTED HERE
+                                  .setContentText("Downloading... 0%")
                                   .setProgress(100, 0, false)
                                   .setOngoing(true);
                               nm.notify(notifId, builder.build());
@@ -260,12 +259,13 @@ jobs:
                               String pureBase64 = base64Data.substring(base64Data.indexOf(",") + 1);
                               byte[] decodedBytes = Base64.decode(pureBase64, Base64.DEFAULT);
 
+                              // Save exact format (.mp3, .lrc, .mp4) to Music8481 Folder
                               File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Music8481");
                               if (!dir.exists()) dir.mkdirs();
                               File file = new File(dir, filename);
 
                               FileOutputStream fos = new FileOutputStream(file);
-                              int chunkSize = 256 * 1024; // 256KB chunks for smooth percentage updates
+                              int chunkSize = 256 * 1024;
                               for (int i = 0; i < decodedBytes.length; i += chunkSize) {
                                   int length = Math.min(chunkSize, decodedBytes.length - i);
                                   fos.write(decodedBytes, i, length);
@@ -278,7 +278,7 @@ jobs:
                               fos.close();
 
                               builder.setProgress(0, 0, false)
-                                     .setContentText("Download Complete in Music/Music8481")
+                                     .setContentText("Saved to Music/Music8481")
                                      .setOngoing(false)
                                      .setSmallIcon(android.R.drawable.stat_sys_download_done);
                               nm.notify(notifId, builder.build());
@@ -293,16 +293,18 @@ jobs:
                   
                   getWindow().setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
 
+                  // 🔥 GLOBAL CUTOUT ALLOWANCE (Allows Edge-to-Edge when requested)
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                       WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
-                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
                       getWindow().setAttributes(layoutParams);
                   }
+
+                  // Default Portrait: Fit windows & Black Bars
                   WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
                   getWindow().setStatusBarColor(Color.BLACK);
                   getWindow().setNavigationBarColor(Color.BLACK);
 
-                  // Smart Permissions Engine (Files + Audio + Notifications)
                   ArrayList<String> perms = new ArrayList<>();
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                       perms.add(Manifest.permission.POST_NOTIFICATIONS);
@@ -330,13 +332,11 @@ jobs:
                       wifiLock.acquire();
                   }
 
-                  // Receiver for PiP Controls
                   pipReceiver = new BroadcastReceiver() {
                       @Override
                       public void onReceive(Context context, Intent intent) {
                           if (ACTION_MEDIA_CONTROL.equals(intent.getAction()) && bridge != null && bridge.getWebView() != null) {
-                              bridge.getWebView().evaluateJavascript(
-                                  "var v = document.querySelector('video') || document.querySelector('audio'); if(v) { v.paused ? v.play() : v.pause(); }", null);
+                              bridge.getWebView().evaluateJavascript("var v = document.querySelector('video') || document.querySelector('audio'); if(v) { v.paused ? v.play() : v.pause(); }", null);
                           }
                       }
                   };
@@ -369,49 +369,73 @@ jobs:
                       webView.setFitsSystemWindows(false);
                       webView.setPadding(0,0,0,0);
                       
-                      if (webView.getParent() instanceof ViewGroup) {
-                          ((ViewGroup) webView.getParent()).setFitsSystemWindows(false);
-                          ((ViewGroup) webView.getParent()).setClipToPadding(false);
-                      }
-
                       webView.addJavascriptInterface(new WebAppInterface(), "AndroidApp");
 
-                      // Robust Blob & Standard File Downloader
+                      // Native Standard Downloader
                       webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
-                          if (url.startsWith("blob:")) {
-                              String js = "var xhr = new XMLHttpRequest(); xhr.open('GET', '"+url+"', true); xhr.responseType = 'blob'; xhr.onload = function(e) { if (this.status == 200) { var reader = new FileReader(); reader.readAsDataURL(this.response); reader.onloadend = function() { var filename = 'Song_' + Date.now() + '.mp3'; AndroidApp.saveBlob(reader.result, '"+mimetype+"', filename); } } }; xhr.send();";
-                              webView.evaluateJavascript(js, null);
-                          } else {
-                              DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                              request.allowScanningByMediaScanner();
-                              request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                              request.setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Music8481/" + URLUtil.guessFileName(url, contentDisposition, mimetype));
-                              DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                              dm.enqueue(request);
-                          }
+                          if (url.startsWith("blob:")) return; // Handled by JS Override below
+                          
+                          String filename = URLUtil.guessFileName(url, contentDisposition, mimetype);
+                          DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                          request.allowScanningByMediaScanner();
+                          request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                          request.setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Music8481/" + filename);
+                          DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                          dm.enqueue(request);
                       });
                       
                       webView.postDelayed(() -> {
-                          webView.evaluateJavascript(
+                          // 🔥 EXACT FILENAME BLOB INTERCEPTOR + UI OPTIMIZATIONS
+                          String injectJS = 
                               "setInterval(function() {" +
-                              "  var meta = document.querySelector('meta[name=\"viewport\"]');" +
-                              "  var content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';" +
-                              "  if (meta && meta.content !== content) {" +
-                              "      meta.content = content;" +
-                              "  } else if (!meta) {" +
-                              "      var m = document.createElement('meta');" +
-                              "      m.name = 'viewport';" +
-                              "      m.content = content;" +
-                              "      document.head.appendChild(m);" +
-                              "  }" +
-                              "  document.documentElement.style.padding = '0';" +
-                              "  document.documentElement.style.margin = '0';" +
-                              "  document.body.style.padding = '0';" +
-                              "  document.body.style.margin = '0';" +
                               "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
                               "  var hasVideo = iframe !== null;" +
                               "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
-                              "}, 500);", null);
+                              "}, 500);" +
+                              
+                              // Method 1: Intercept standard clicks on download links
+                              "document.addEventListener('click', function(e) {" +
+                              "  var target = e.target.closest('a');" +
+                              "  if (target && target.href && target.href.startsWith('blob:') && target.download) {" +
+                              "      e.preventDefault(); e.stopPropagation();" +
+                              "      var xhr = new XMLHttpRequest();" +
+                              "      xhr.open('GET', target.href, true);" +
+                              "      xhr.responseType = 'blob';" +
+                              "      xhr.onload = function() {" +
+                              "          if (this.status === 200) {" +
+                              "              var reader = new FileReader();" +
+                              "              reader.readAsDataURL(this.response);" +
+                              "              reader.onloadend = function() {" +
+                              "                  window.AndroidApp.saveBlob(reader.result, target.type || '', target.download);" +
+                              "              }" +
+                              "          }" +
+                              "      };" +
+                              "      xhr.send();" +
+                              "  }" +
+                              "}, true);" +
+
+                              // Method 2: Intercept programmatic .click() triggers
+                              "const originalClick = HTMLAnchorElement.prototype.click;" +
+                              "HTMLAnchorElement.prototype.click = function() {" +
+                              "  if (this.href && this.href.startsWith('blob:') && this.download) {" +
+                              "      var xhr = new XMLHttpRequest();" +
+                              "      xhr.open('GET', this.href, true);" +
+                              "      xhr.responseType = 'blob';" +
+                              "      xhr.onload = () => {" +
+                              "          if (xhr.status === 200) {" +
+                              "              var reader = new FileReader();" +
+                              "              reader.readAsDataURL(xhr.response);" +
+                              "              reader.onloadend = () => {" +
+                              "                  window.AndroidApp.saveBlob(reader.result, this.type || '', this.download);" +
+                              "              }" +
+                              "          }" +
+                              "      };" +
+                              "      xhr.send(); return;" +
+                              "  }" +
+                              "  originalClick.call(this);" +
+                              "};";
+                              
+                          webView.evaluateJavascript(injectJS, null);
                       }, 2000);
 
                       final WebChromeClient originalClient = webView.getWebChromeClient();
@@ -430,8 +454,10 @@ jobs:
                                   updatePiPParams(true);
                                   setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
-                                  // 🔥 STRICT OLD-SCHOOL TRUE EDGE-TO-EDGE INJECTION
+                                  // 🔥 STRICT OLD-SCHOOL TRUE EDGE-TO-EDGE INJECTION (No Cuts)
                                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+                                  
                                   getWindow().getDecorView().setSystemUiVisibility(
                                       View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                                       | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -441,19 +467,12 @@ jobs:
                                       | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                                   );
 
-                                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                      WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
-                                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                                      getWindow().setAttributes(layoutParams);
-                                  }
-                                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-
                                   WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
                                   windowInsetsController.hide(WindowInsetsCompat.Type.systemBars());
                                   windowInsetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
 
                                   mCustomView.setBackgroundColor(Color.BLACK);
-                                  mCustomView.setFitsSystemWindows(false);
+                                  mCustomView.setFitsSystemWindows(false); // Vital to push into notch
                                   ((FrameLayout) getWindow().getDecorView()).addView(mCustomView, new FrameLayout.LayoutParams(-1, -1));
                               });
                           }
@@ -468,16 +487,11 @@ jobs:
                                   updatePiPParams(isVideoModeActive);
                                   setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
                                   
-                                  // Restore Standard Portrait Limits & Clear Flags
+                                  // Restore Standard Portrait Limits & Black Bars
                                   getWindow().clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-                                  getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-
-                                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                      WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
-                                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
-                                      getWindow().setAttributes(layoutParams);
-                                  }
                                   WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+                                  
+                                  getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                                   getWindow().setStatusBarColor(Color.BLACK);
                                   getWindow().setNavigationBarColor(Color.BLACK);
                                   
