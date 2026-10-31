@@ -257,6 +257,7 @@ jobs:
                       
                       webView.postDelayed(() -> {
                           webView.evaluateJavascript(
+                              // ── EXISTING VIEWPORT / PiP DETECTION LOOP ──
                               "setInterval(function() {" +
                               "  var meta = document.querySelector('meta[name=\"viewport\"]');" +
                               "  var content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';" +
@@ -275,7 +276,41 @@ jobs:
                               "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
                               "  var hasVideo = iframe !== null;" +
                               "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
-                              "}, 500);", null);
+                              "}, 500);" +
+                              // ── MEDIA SESSION PLUGIN DRIVER ──
+                              // Explicitly set playback state and wire play/pause handlers.
+                              // The WebView cannot auto-detect media on Android.
+                              "(function() {" +
+                              "  if (window._mediaSessionDriver) return;" +
+                              "  window._mediaSessionDriver = true;" +
+                              "  function syncMediaSession() {" +
+                              "    if (!window.Capacitor || !window.Capacitor.Plugins) return;" +
+                              "    var MediaSession = window.Capacitor.Plugins.MediaSession;" +
+                              "    if (!MediaSession || !MediaSession.setPlaybackState) return;" +
+                              "    var media = document.querySelector('video, audio');" +
+                              "    if (!media) {" +
+                              "      MediaSession.setPlaybackState({ playbackState: 'none' });" +
+                              "      return;" +
+                              "    }" +
+                              "    var state = media.paused ? 'paused' : 'playing';" +
+                              "    MediaSession.setPlaybackState({ playbackState: state });" +
+                              "    MediaSession.setActionHandler({ action: 'play' }, function() {" +
+                              "      media.play();" +
+                              "    });" +
+                              "    MediaSession.setActionHandler({ action: 'pause' }, function() {" +
+                              "      media.pause();" +
+                              "    });" +
+                              "    MediaSession.setMetadata({" +
+                              "      title: document.title || 'Music8481'," +
+                              "      artist: 'Music8481'," +
+                              "      album: 'Music8481'," +
+                              "      artwork: []" +
+                              "    });" +
+                              "  }" +
+                              "  setInterval(syncMediaSession, 1000);" +
+                              "  document.addEventListener('play', syncMediaSession, true);" +
+                              "  document.addEventListener('pause', syncMediaSession, true);" +
+                              "})();", null);
                       }, 2000);
 
                       final WebChromeClient originalClient = webView.getWebChromeClient();
@@ -391,9 +426,11 @@ jobs:
               @Override
               public void onPause() {
                   super.onPause();
+                  // ✅ CORRECTED: Pause the WebView, do NOT resume it.
+                  // Resuming the WebView in onPause prevented the foreground
+                  // media service from taking over when the app went to background.
                   if (this.bridge != null && this.bridge.getWebView() != null) {
-                      this.bridge.getWebView().resumeTimers();
-                      this.bridge.getWebView().onResume(); 
+                      this.bridge.getWebView().onPause();
                   }
               }
 
