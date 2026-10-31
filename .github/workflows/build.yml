@@ -70,12 +70,12 @@ jobs:
           </html>
           EOF
           
-          npx cap init Music8481 com.music8481.app --web-dir www
+          npx cap init Music8481 com.spotify.music --web-dir www
 
           rm capacitor.config.ts || true
           cat <<EOF > capacitor.config.json
           {
-            "appId": "com.music8481.app",
+            "appId": "com.spotify.music",
             "appName": "Music8481",
             "webDir": "www",
             "server": {
@@ -144,8 +144,8 @@ jobs:
 
       - name: Inject Native Premium Engine & DOM Isolation
         run: |
-          cat <<EOF > android/app/src/main/java/com/music8481/app/MainActivity.java
-          package com.music8481.app;
+          cat <<EOF > android/app/src/main/java/com/spotify/music/MainActivity.java
+          package com.spotify.music;
 
           import android.graphics.Color;
           import android.os.Build;
