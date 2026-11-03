@@ -1,643 +1,387 @@
-name: Build Premium WebView APK
+name: Build Web APK
+
+# =====================================================================
+#  WebView APK builder
+#  - Opens your website (BASE_URL) as the initial page inside the app
+#  - Downloads a block list (Block.json) from GitHub at every app start
+#    and blocks matching domains / URLs in all network requests
+#    (cached locally so it also works when the list can't be fetched)
+#  - Builds a debug APK (installable directly) and uploads it as artifact
+#
+#  HOW TO USE:
+#   1. Save this file as  .github/workflows/build-apk.yml  in your repo
+#   2. Edit the values in the "env" section below (or run manually from
+#      the Actions tab -> "Run workflow" and type them there)
+#   3. Download the APK from the run's "Artifacts" section
+# =====================================================================
 
 on:
   workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Base domain / initial URL (e.g. https://yourdomain.com)"
+        required: false
+      app_name:
+        description: "App name"
+        required: false
+      package_name:
+        description: "Package name (e.g. com.example.webapp)"
+        required: false
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+env:
+  # ---------------------------------------------------------------
+  # >>> PASTE YOUR BASE DOMAIN / INITIAL OPENING URL HERE <<<
+  #     (must start with https:// or http://)
+  # ---------------------------------------------------------------
+  BASE_URL: ${{ github.event.inputs.base_url || 'https://example.com' }}
+
+  # >>> APP NAME shown on the phone <<<
+  APP_NAME: ${{ github.event.inputs.app_name || 'My Web App' }}
+
+  # >>> PACKAGE NAME (unique id, lowercase, letters/dots only) <<<
+  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.example.webapp' }}
+
+  # >>> BLOCK LIST API (old URL, JSON with blockDomains + blockUrls) <<<
+  BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
+
+  # >>> OPTIONAL: direct link to a PNG icon (leave empty for default icon) <<<
+  ICON_URL: ''
 
 jobs:
-  build-apk:
-    runs-on: ubuntu-22.04 
-    
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          node-version: '22'
+          distribution: temurin
+          java-version: '17'
 
-      - name: Setup Java
-        uses: actions/setup-java@v5
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
+          gradle-version: '8.7'
 
-      - name: Install Capacitor & Premium Plugins
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Generate Android WebView project
         run: |
-          npm init -y
-          npm install @capacitor/core
-          npm install -D @capacitor/cli @capacitor/android @capacitor/assets
-          npm install @capgo/capacitor-media-session
-          npm install @capacitor/splash-screen
+          set -e
+          mkdir -p webapp && cd webapp
+          PKG_PATH=$(echo "$PACKAGE_NAME" | tr . /)
+          mkdir -p app/src/main/java/$PKG_PATH
+          mkdir -p app/src/main/res/drawable
 
-      - name: Initialize Capacitor Config & Offline UI
-        run: |
-          mkdir -p www
-          cat <<'EOF' > www/index.html
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-            <title>Loading...</title>
-            <style>body, html { margin: 0; padding: 0; width: 100vw; height: 100vh; background: #000; }</style>
-          </head>
-          <body></body>
-          </html>
-          EOF
-          
-          cat <<'EOF' > www/error.html
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-            <title>Offline</title>
-            <style>
-              body { background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-              .spinner { width: 50px; height: 50px; border: 3px solid rgba(29, 185, 84, 0.3); border-top-color: #1DB954; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
-              @keyframes spin { 100% { transform: rotate(360deg); } }
-              h1 { font-size: 24px; margin: 0 0 10px; }
-              p { color: #a7a7a7; font-size: 14px; text-align: center; max-width: 80%; }
-              button { margin-top: 20px; background: #1DB954; color: #000; border: none; padding: 12px 24px; border-radius: 20px; font-weight: bold; cursor: pointer; transition: transform 0.2s; }
-            </style>
-          </head>
-          <body>
-            <div class="spinner"></div>
-            <h1>You're Offline</h1>
-            <p>Please check your internet connection.</p>
-            <button onclick="window.location.href='https://ayushgaana.vercel.app'">Retry Connection</button>
-          </body>
-          </html>
-          EOF
-          
-          npx cap init Music8481 com.music8481.music --web-dir www
+          # ---------- optional icon ----------
+          if [ -n "$ICON_URL" ]; then
+            curl -fsSL "$ICON_URL" -o app/src/main/res/drawable/ic_launcher.png
+            export ICON_REF="@drawable/ic_launcher"
+          else
+            export ICON_REF="@android:drawable/sym_def_app_icon"
+          fi
 
-          rm capacitor.config.ts || true
-          cat <<'EOF' > capacitor.config.json
-          {
-            "appId": "com.music8481.music",
-            "appName": "Music8481",
-            "webDir": "www",
-            "server": {
-              "url": "https://ayushgaana.vercel.app",
-              "cleartext": true,
-              "errorPath": "error.html"
-            },
-            "plugins": {
-              "SplashScreen": {
-                "launchShowDuration": 3000,
-                "launchAutoHide": true,
-                "backgroundColor": "#000000",
-                "androidSplashResourceName": "splash",
-                "showSpinner": true,
-                "spinnerColor": "#1DB954"
+          # ---------- settings.gradle ----------
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
               }
-            }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "WebApp"
+          include ':app'
+          EOF
+
+          # ---------- root build.gradle ----------
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
           }
           EOF
 
-      - name: Add Native Android Platform
-        run: npx cap add android
+          # ---------- gradle.properties ----------
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
 
-      - name: Inject Permissions & Hardware Acceleration
-        run: |
-          node -e "
-          const fs = require('fs');
-          const path = 'android/app/src/main/AndroidManifest.xml';
-          let xml = fs.readFileSync(path, 'utf8');
-          const perms = \`
-              <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />
-              <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK\" />
-              <uses-permission android:name=\"android.permission.WAKE_LOCK\" />
-              <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />
-              <uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\" />
-              <uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\" />
-              <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />
-              <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" android:maxSdkVersion=\"29\" />
-              <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" />
-              <uses-permission android:name=\"android.permission.READ_MEDIA_AUDIO\" />
-          \`;
-          if (!xml.includes('android.permission.WAKE_LOCK')) {
-              xml = xml.replace('<application', perms + '\n    <application');
-              xml = xml.replace('<application', '<application android:hardwareAccelerated=\"true\" android:largeHeap=\"true\" android:requestLegacyExternalStorage=\"true\"');
-              xml = xml.replace('<activity', '<activity android:supportsPictureInPicture=\"true\"');
-              fs.writeFileSync(path, xml);
+          # ---------- app/build.gradle ----------
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
           }
-          "
-
-      - name: Configure Android App Theme (Portrait Black Bars)
-        run: |
-          node -e "
-          const fs = require('fs');
-          const path = 'android/app/src/main/res/values/styles.xml';
-          if (fs.existsSync(path)) {
-              let xml = fs.readFileSync(path, 'utf8');
-              const themeConfig = \`
-                  <item name=\"android:statusBarColor\">@android:color/black</item>
-                  <item name=\"android:navigationBarColor\">@android:color/black</item>
-                  <item name=\"android:windowDrawsSystemBarBackgrounds\">true</item>
-              \`;
-              xml = xml.replace(/<\/style>/g, themeConfig + '\n</style>');
-              fs.writeFileSync(path, xml);
+          android {
+              namespace '__PKG__'
+              compileSdk 34
+              defaultConfig {
+                  applicationId '__PKG__'
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
           }
-          "
+          EOF
 
-      - name: Inject Native Premium Engine (Exact File Downloads & True Edge-to-Edge)
-        run: |
-          mkdir -p android/app/src/main/java/com/music8481/music/
-          
-          cat <<'EOF' > android/app/src/main/java/com/music8481/music/MainActivity.java
-          package com.music8481.music;
+          # ---------- AndroidManifest.xml ----------
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:label="__APP_NAME__"
+                  android:icon="__ICON_REF__"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
 
-          import android.graphics.Color;
-          import android.os.Build;
-          import android.os.Bundle;
-          import android.Manifest;
-          import android.content.pm.PackageManager;
-          import androidx.core.app.ActivityCompat;
-          import androidx.core.content.ContextCompat;
-          import androidx.core.view.WindowCompat;
-          import androidx.core.view.WindowInsetsCompat;
-          import androidx.core.view.WindowInsetsControllerCompat;
-          import com.getcapacitor.BridgeActivity;
-          import androidx.core.app.NotificationCompat;
-          
-          import android.app.DownloadManager;
-          import android.app.NotificationChannel;
-          import android.app.NotificationManager;
-          import android.app.PendingIntent;
-          import android.app.PictureInPictureParams;
-          import android.app.RemoteAction;
-          import android.content.BroadcastReceiver;
-          import android.content.Context;
+          # ---------- MainActivity.java ----------
+          cat > app/src/main/java/$PKG_PATH/MainActivity.java <<'EOF'
+          package __PKG__;
+
+          import android.app.Activity;
           import android.content.Intent;
-          import android.content.IntentFilter;
-          import android.graphics.drawable.Icon;
+          import android.content.SharedPreferences;
           import android.net.Uri;
-          import android.os.Environment;
-          import android.util.Base64;
-          import android.webkit.DownloadListener;
-          import android.webkit.URLUtil;
-          import android.webkit.WebView;
-          import android.webkit.WebSettings;
+          import android.os.Bundle;
+          import android.util.Log;
           import android.webkit.WebChromeClient;
-          import android.webkit.JavascriptInterface;
-          import android.view.View;
-          import android.view.ViewGroup;
-          import android.widget.FrameLayout;
-          import android.os.PowerManager;
-          import android.media.AudioManager;
-          import android.net.wifi.WifiManager;
-          import android.view.WindowManager;
-          import android.content.pm.ActivityInfo;
-          import android.util.Rational;
-          import android.content.res.Configuration;
-          
-          import java.io.File;
-          import java.io.FileOutputStream;
-          import java.util.ArrayList;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
 
-          public class MainActivity extends BridgeActivity {
-              private PowerManager.WakeLock wakeLock;
-              private WifiManager.WifiLock wifiLock;
-              private boolean isVideoFullscreen = false;
-              private boolean isVideoModeActive = false; 
-              private BroadcastReceiver pipReceiver;
-              
-              private static final String ACTION_MEDIA_CONTROL = "media_control";
-              private static final String EXTRA_CONTROL_TYPE = "control_type";
+          import org.json.JSONArray;
+          import org.json.JSONObject;
 
-              private void updatePiPParams(boolean enable) {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
-                      builder.setAspectRatio(new Rational(16, 9));
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                          builder.setAutoEnterEnabled(enable);
-                      }
-                      
-                      ArrayList<RemoteAction> actions = new ArrayList<>();
-                      Intent intent = new Intent(ACTION_MEDIA_CONTROL);
-                      intent.putExtra(EXTRA_CONTROL_TYPE, 1);
-                      int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
-                      PendingIntent pendingIntent = PendingIntent.getBroadcast(this, 1, intent, flags);
-                      Icon icon = Icon.createWithResource(this, android.R.drawable.ic_media_play);
-                      actions.add(new RemoteAction(icon, "Toggle Playback", "Play or Pause", pendingIntent));
-                      
-                      builder.setActions(actions);
-                      try { setPictureInPictureParams(builder.build()); } catch(Exception e) {}
-                  }
-              }
+          import java.io.ByteArrayInputStream;
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.HashSet;
+          import java.util.Locale;
+          import java.util.Set;
 
-              public class WebAppInterface {
-                  @JavascriptInterface
-                  public void setVideoMode(boolean isVideo) {
-                      if (isVideoModeActive != isVideo) {
-                          isVideoModeActive = isVideo;
-                          runOnUiThread(() -> updatePiPParams(isVideoFullscreen || isVideoModeActive));
-                      }
-                  }
+          public class MainActivity extends Activity {
 
-                  @JavascriptInterface
-                  public void saveBlob(String base64Data, String mimeType, String filename) {
-                      new Thread(() -> {
-                          try {
-                              NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-                              String channelId = "music8481_downloads";
-                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                  nm.createNotificationChannel(new NotificationChannel(channelId, "Downloads", NotificationManager.IMPORTANCE_LOW));
-                              }
-                              
-                              int notifId = (int) System.currentTimeMillis();
-                              NotificationCompat.Builder builder = new NotificationCompat.Builder(MainActivity.this, channelId)
-                                  .setSmallIcon(android.R.drawable.stat_sys_download)
-                                  .setContentTitle(filename) // EXACT FILENAME INJECTED HERE
-                                  .setContentText("Downloading... 0%")
-                                  .setProgress(100, 0, false)
-                                  .setOngoing(true);
-                              nm.notify(notifId, builder.build());
+              // Injected by the GitHub workflow
+              private static final String BASE_URL  = "__BASE_URL__";
+              private static final String BLOCK_API = "__BLOCK_API__";
+              private static final String TAG = "WebApp";
 
-                              String pureBase64 = base64Data.substring(base64Data.indexOf(",") + 1);
-                              byte[] decodedBytes = Base64.decode(pureBase64, Base64.DEFAULT);
-
-                              // Save exact format (.mp3, .lrc, .mp4) to Music8481 Folder
-                              File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Music8481");
-                              if (!dir.exists()) dir.mkdirs();
-                              File file = new File(dir, filename);
-
-                              FileOutputStream fos = new FileOutputStream(file);
-                              int chunkSize = 256 * 1024;
-                              for (int i = 0; i < decodedBytes.length; i += chunkSize) {
-                                  int length = Math.min(chunkSize, decodedBytes.length - i);
-                                  fos.write(decodedBytes, i, length);
-                                  int progress = (int) (((float)(i + length) / decodedBytes.length) * 100);
-                                  builder.setProgress(100, progress, false);
-                                  builder.setContentText(progress + "%");
-                                  nm.notify(notifId, builder.build());
-                              }
-                              fos.flush();
-                              fos.close();
-
-                              builder.setProgress(0, 0, false)
-                                     .setContentText("Saved to Music/Music8481")
-                                     .setOngoing(false)
-                                     .setSmallIcon(android.R.drawable.stat_sys_download_done);
-                              nm.notify(notifId, builder.build());
-                          } catch (Exception e) { e.printStackTrace(); }
-                      }).start();
-                  }
-              }
+              private WebView web;
+              private SharedPreferences prefs;
+              private final Set<String> blockDomains = Collections.synchronizedSet(new HashSet<String>());
+              private final Set<String> blockUrls = Collections.synchronizedSet(new HashSet<String>());
 
               @Override
-              public void onCreate(Bundle savedInstanceState) {
+              protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  
-                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
+                  prefs = getSharedPreferences("blocklist", MODE_PRIVATE);
 
-                  // 🔥 GLOBAL CUTOUT ALLOWANCE (Allows Edge-to-Edge when requested)
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                      WindowManager.LayoutParams layoutParams = getWindow().getAttributes();
-                      layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      getWindow().setAttributes(layoutParams);
-                  }
+                  web = new WebView(this);
+                  setContentView(web);
 
-                  // Default Portrait: Fit windows & Black Bars
-                  WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
-                  getWindow().setStatusBarColor(Color.BLACK);
-                  getWindow().setNavigationBarColor(Color.BLACK);
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setDatabaseEnabled(true);
+                  s.setLoadWithOverviewMode(true);
+                  s.setUseWideViewPort(true);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
-                  ArrayList<String> perms = new ArrayList<>();
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                      perms.add(Manifest.permission.POST_NOTIFICATIONS);
-                      perms.add(Manifest.permission.READ_MEDIA_AUDIO);
-                  } else {
-                      perms.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-                      perms.add(Manifest.permission.READ_EXTERNAL_STORAGE);
-                  }
-                  boolean requestNeeded = false;
-                  for(String p : perms) {
-                      if(ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) requestNeeded = true;
-                  }
-                  if(requestNeeded) ActivityCompat.requestPermissions(this, perms.toArray(new String[0]), 101);
-
-                  AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                  if (audioManager != null) setVolumeControlStream(AudioManager.STREAM_MUSIC);
-
-                  PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                  wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Music8481::BackgroundAudioLock");
-                  wakeLock.acquire();
-
-                  WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                  if (wifiManager != null) {
-                      wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Music8481::HighPerfWifiLock");
-                      wifiLock.acquire();
-                  }
-
-                  pipReceiver = new BroadcastReceiver() {
+                  web.setWebChromeClient(new WebChromeClient());
+                  web.setWebViewClient(new WebViewClient() {
                       @Override
-                      public void onReceive(Context context, Intent intent) {
-                          if (ACTION_MEDIA_CONTROL.equals(intent.getAction()) && bridge != null && bridge.getWebView() != null) {
-                              bridge.getWebView().evaluateJavascript("var v = document.querySelector('video') || document.querySelector('audio'); if(v) { v.paused ? v.play() : v.pause(); }", null);
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          String url = request.getUrl().toString();
+                          if (isBlocked(url)) {
+                              Log.d(TAG, "BLOCKED: " + url);
+                              return new WebResourceResponse("text/plain", "UTF-8", 403, "Blocked",
+                                      new HashMap<String, String>(), new ByteArrayInputStream(new byte[0]));
                           }
+                          return super.shouldInterceptRequest(view, request);
                       }
-                  };
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                      registerReceiver(pipReceiver, new IntentFilter(ACTION_MEDIA_CONTROL), Context.RECEIVER_NOT_EXPORTED);
-                  } else {
-                      registerReceiver(pipReceiver, new IntentFilter(ACTION_MEDIA_CONTROL));
-                  }
-              }
 
-              @Override
-              public void onStart() {
-                  super.onStart();
-                  if (this.bridge != null && this.bridge.getWebView() != null) {
-                      final WebView webView = this.bridge.getWebView();
-                      WebSettings settings = webView.getSettings();
-                      
-                      settings.setMediaPlaybackRequiresUserGesture(false); 
-                      webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-                      
-                      settings.setDomStorageEnabled(true);
-                      settings.setDatabaseEnabled(true);
-                      settings.setAllowFileAccess(true);
-                      settings.setAllowContentAccess(true);
-                      settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-                      settings.setOffscreenPreRaster(true);
-                      
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(false);
-                      
-                      webView.setFitsSystemWindows(false);
-                      webView.setPadding(0,0,0,0);
-                      
-                      webView.addJavascriptInterface(new WebAppInterface(), "AndroidApp");
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          String url = request.getUrl().toString();
+                          if (isBlocked(url)) {
+                              Log.d(TAG, "BLOCKED NAV: " + url);
+                              return true;
+                          }
+                          String scheme = request.getUrl().getScheme();
+                          if ("http".equals(scheme) || "https".equals(scheme)) {
+                              return false; // stay inside the app
+                          }
+                          try { // tel:, mailto:, intent:, upi: etc.
+                              startActivity(new Intent(Intent.ACTION_VIEW, request.getUrl()));
+                          } catch (Exception ignored) { }
+                          return true;
+                      }
+                  });
 
-                      // Native Standard Downloader
-                      webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
-                          if (url.startsWith("blob:")) return; // Handled by JS Override below
-                          
-                          String filename = URLUtil.guessFileName(url, contentDisposition, mimetype);
-                          DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                          request.allowScanningByMediaScanner();
-                          request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                          request.setDestinationInExternalPublicDir(Environment.DIRECTORY_MUSIC, "Music8481/" + filename);
-                          DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                          dm.enqueue(request);
-                      });
-                      
-                      webView.postDelayed(() -> {
-                          // 🔥 EXACT FILENAME BLOB INTERCEPTOR + UI OPTIMIZATIONS
-                          String injectJS = 
-                              "setInterval(function() {" +
-                              "  var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
-                              "  var hasVideo = iframe !== null;" +
-                              "  if (window.AndroidApp) window.AndroidApp.setVideoMode(hasVideo);" +
-                              "}, 500);" +
-                              
-                              // Method 1: Intercept standard clicks on download links
-                              "document.addEventListener('click', function(e) {" +
-                              "  var target = e.target.closest('a');" +
-                              "  if (target && target.href && target.href.startsWith('blob:') && target.download) {" +
-                              "      e.preventDefault(); e.stopPropagation();" +
-                              "      var xhr = new XMLHttpRequest();" +
-                              "      xhr.open('GET', target.href, true);" +
-                              "      xhr.responseType = 'blob';" +
-                              "      xhr.onload = function() {" +
-                              "          if (this.status === 200) {" +
-                              "              var reader = new FileReader();" +
-                              "              reader.readAsDataURL(this.response);" +
-                              "              reader.onloadend = function() {" +
-                              "                  window.AndroidApp.saveBlob(reader.result, target.type || '', target.download);" +
-                              "              }" +
-                              "          }" +
-                              "      };" +
-                              "      xhr.send();" +
-                              "  }" +
-                              "}, true);" +
+                  // 1) load cached block list (if any)
+                  String cached = prefs.getString("json", null);
+                  final boolean hadCache = cached != null && parse(cached);
 
-                              // Method 2: Intercept programmatic .click() triggers
-                              "const originalClick = HTMLAnchorElement.prototype.click;" +
-                              "HTMLAnchorElement.prototype.click = function() {" +
-                              "  if (this.href && this.href.startsWith('blob:') && this.download) {" +
-                              "      var xhr = new XMLHttpRequest();" +
-                              "      xhr.open('GET', this.href, true);" +
-                              "      xhr.responseType = 'blob';" +
-                              "      xhr.onload = () => {" +
-                              "          if (xhr.status === 200) {" +
-                              "              var reader = new FileReader();" +
-                              "              reader.readAsDataURL(xhr.response);" +
-                              "              reader.onloadend = () => {" +
-                              "                  window.AndroidApp.saveBlob(reader.result, this.type || '', this.download);" +
-                              "              }" +
-                              "          }" +
-                              "      };" +
-                              "      xhr.send(); return;" +
-                              "  }" +
-                              "  originalClick.call(this);" +
-                              "};";
-                              
-                          webView.evaluateJavascript(injectJS, null);
-                      }, 2000);
+                  // 2) open the site right away if we already have a list
+                  if (hadCache) web.loadUrl(BASE_URL);
 
-                      final WebChromeClient originalClient = webView.getWebChromeClient();
-                      webView.setWebChromeClient(new WebChromeClient() {
-                          private View mCustomView;
-                          private WebChromeClient.CustomViewCallback mCustomViewCallback;
-
-                          @Override
-                          public void onShowCustomView(View view, CustomViewCallback callback) {
-                              if (mCustomView != null) { onHideCustomView(); return; }
-                              mCustomView = view;
-                              isVideoFullscreen = true;
-                              mCustomViewCallback = callback;
-                              
-                              runOnUiThread(() -> {
-                                  updatePiPParams(true);
-                                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-
-                                  // 🔥 STRICT OLD-SCHOOL TRUE EDGE-TO-EDGE INJECTION (No Cuts)
-                                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-                                  WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-                                  
-                                  getWindow().getDecorView().setSystemUiVisibility(
-                                      View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                                      | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                      | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                                  );
-
-                                  WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
-                                  windowInsetsController.hide(WindowInsetsCompat.Type.systemBars());
-                                  windowInsetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-
-                                  mCustomView.setBackgroundColor(Color.BLACK);
-                                  mCustomView.setFitsSystemWindows(false); // Vital to push into notch
-                                  ((FrameLayout) getWindow().getDecorView()).addView(mCustomView, new FrameLayout.LayoutParams(-1, -1));
+                  // 3) fetch fresh list in background (first run: wait for it, then open site)
+                  new Thread(new Runnable() {
+                      @Override
+                      public void run() {
+                          String json = download(BLOCK_API);
+                          if (json != null && parse(json)) {
+                              prefs.edit().putString("json", json).apply();
+                          }
+                          if (!hadCache) {
+                              runOnUiThread(new Runnable() {
+                                  @Override public void run() { web.loadUrl(BASE_URL); }
                               });
                           }
-
-                          @Override
-                          public void onHideCustomView() {
-                              ((FrameLayout) getWindow().getDecorView()).removeView(mCustomView);
-                              mCustomView = null;
-                              isVideoFullscreen = false;
-                              
-                              runOnUiThread(() -> {
-                                  updatePiPParams(isVideoModeActive);
-                                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
-                                  
-                                  // Restore Standard Portrait Limits & Black Bars
-                                  getWindow().clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-                                  WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
-                                  
-                                  getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-                                  getWindow().setStatusBarColor(Color.BLACK);
-                                  getWindow().setNavigationBarColor(Color.BLACK);
-                                  
-                                  WindowInsetsControllerCompat windowInsetsController = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
-                                  windowInsetsController.show(WindowInsetsCompat.Type.systemBars());
-                                  
-                                  if (mCustomViewCallback != null) { mCustomViewCallback.onCustomViewHidden(); mCustomViewCallback = null; }
-                              });
-                          }
-                          @Override
-                          public void onPermissionRequest(android.webkit.PermissionRequest request) { if (originalClient != null) originalClient.onPermissionRequest(request); }
-                          @Override
-                          public boolean onShowFileChooser(WebView webView, android.webkit.ValueCallback<android.net.Uri[]> filePathCallback, FileChooserParams fileChooserParams) { return originalClient != null && originalClient.onShowFileChooser(webView, filePathCallback, fileChooserParams); }
-                          @Override
-                          public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) { return originalClient != null && originalClient.onConsoleMessage(consoleMessage); }
-                      });
-                  }
-              }
-
-              // ==========================================
-              // 🔥 DOM-TREE ISOLATION ENGINE FOR PiP 🔥
-              // ==========================================
-              @Override
-              public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
-                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
-                  if (this.bridge != null && this.bridge.getWebView() != null) {
-                      WebView webView = this.bridge.getWebView();
-                      if (isInPictureInPictureMode) {
-                          String js = 
-                              "var style = document.getElementById('pip-style-fix');" +
-                              "if (!style) {" +
-                              "  style = document.createElement('style');" +
-                              "  style.id = 'pip-style-fix';" +
-                              "  style.innerHTML = '" +
-                              "    body.pip-active { background: #000 !important; overflow: hidden !important; } " +
-                              "    body.pip-active .pip-ancestor { position: static !important; transform: none !important; contain: none !important; perspective: none !important; filter: none !important; backdrop-filter: none !important; clip-path: none !important; mask: none !important; overflow: visible !important; margin: 0 !important; padding: 0 !important; background: transparent !important; width: 100% !important; height: 100% !important; } " +
-                              "    body.pip-active .pip-target-iframe { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; min-width: 100% !important; min-height: 100% !important; z-index: 2147483647 !important; background: #000 !important; border: none !important; margin: 0 !important; padding: 0 !important; display: block !important; opacity: 1 !important; visibility: visible !important; object-fit: cover !important; } " +
-                              "    body.pip-active .pip-hide-sibling { display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; } " +
-                              "  ';" +
-                              "  document.head.appendChild(style);" +
-                              "}" +
-                              "var iframe = document.querySelector('iframe[src*=\"ayushcom.vercel.app\"]');" +
-                              "if (!iframe) iframe = document.querySelector('iframe');" +
-                              "if (iframe) {" +
-                              "  iframe.classList.add('pip-target-iframe');" +
-                              "  var el = iframe;" +
-                              "  while (el && el !== document.body && el !== document.documentElement) {" +
-                              "    if (el !== iframe) el.classList.add('pip-ancestor');" +
-                              "    if (el.parentElement) {" +
-                              "      var siblings = el.parentElement.children;" +
-                              "      for (var i = 0; i < siblings.length; i++) {" +
-                              "        var sib = siblings[i];" +
-                              "        if (sib !== el && sib.tagName !== 'SCRIPT' && sib.tagName !== 'STYLE' && sib.tagName !== 'LINK') {" +
-                              "          sib.classList.add('pip-hide-sibling');" +
-                              "        }" +
-                              "      }" +
-                              "    }" +
-                              "    el = el.parentElement;" +
-                              "  }" +
-                              "  document.body.classList.add('pip-active');" +
-                              "}";
-                          webView.evaluateJavascript(js, null);
-                      } else {
-                          String js = 
-                              "document.body.classList.remove('pip-active');" +
-                              "var elements = document.querySelectorAll('.pip-target-iframe, .pip-ancestor, .pip-hide-sibling');" +
-                              "for (var i = 0; i < elements.length; i++) {" +
-                              "  elements[i].classList.remove('pip-target-iframe', 'pip-ancestor', 'pip-hide-sibling');" +
-                              "}";
-                          webView.evaluateJavascript(js, null);
                       }
+                  }).start();
+              }
+
+              private boolean parse(String json) {
+                  try {
+                      JSONObject o = new JSONObject(json);
+                      Set<String> d = new HashSet<String>();
+                      Set<String> u = new HashSet<String>();
+                      JSONArray da = o.optJSONArray("blockDomains");
+                      JSONArray ua = o.optJSONArray("blockUrls");
+                      if (da != null) for (int i = 0; i < da.length(); i++)
+                          d.add(da.getString(i).trim().toLowerCase(Locale.ROOT));
+                      if (ua != null) for (int i = 0; i < ua.length(); i++)
+                          u.add(endpointKey(ua.getString(i).trim()));
+                      blockDomains.clear(); blockDomains.addAll(d);
+                      blockUrls.clear();    blockUrls.addAll(u);
+                      Log.d(TAG, "Block list loaded: " + d.size() + " domains, " + u.size() + " urls");
+                      return true;
+                  } catch (Exception e) {
+                      Log.e(TAG, "parse error", e);
+                      return false;
+                  }
+              }
+
+              private static String stripSlash(String s) {
+                  while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+                  return s;
+              }
+
+              private boolean isBlocked(String url) {
+                  try {
+                      String host = Uri.parse(url).getHost();
+                      // 1) blockDomains: EXACT host match only (no subdomains)
+                      if (host != null && blockDomains.contains(host.toLowerCase(Locale.ROOT))) {
+                          return true;
+                      }
+                      // 2) blockUrls: EXACT endpoint only (host + path; query/#hash ignored,
+                      //    other paths on the same domain are NOT blocked)
+                      if (blockUrls.contains(endpointKey(url))) {
+                          return true;
+                      }
+                  } catch (Exception ignored) { }
+                  return false;
+              }
+
+              // "https://Google.com/search/?q=x#a" -> "google.com/search"
+              private static String endpointKey(String url) {
+                  Uri u = Uri.parse(url);
+                  String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
+                  String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
+                  return host + stripSlash(path);
+              }
+
+              private String download(String link) {
+                  HttpURLConnection c = null;
+                  try {
+                      c = (HttpURLConnection) new URL(link).openConnection();
+                      c.setConnectTimeout(5000);
+                      c.setReadTimeout(5000);
+                      if (c.getResponseCode() != 200) return null;
+                      BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
+                      StringBuilder sb = new StringBuilder();
+                      String line;
+                      while ((line = r.readLine()) != null) sb.append(line).append('\n');
+                      r.close();
+                      return sb.toString();
+                  } catch (Exception e) {
+                      Log.e(TAG, "download error", e);
+                      return null;
+                  } finally {
+                      if (c != null) c.disconnect();
                   }
               }
 
               @Override
-              public void onUserLeaveHint() {
-                  super.onUserLeaveHint();
-                  if ((isVideoFullscreen || isVideoModeActive) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                      try { enterPictureInPictureMode(new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build()); } catch (Exception e) {}
-                  }
-              }
-
-              @Override
-              public void onPause() {
-                  super.onPause();
-                  if (this.bridge != null && this.bridge.getWebView() != null) {
-                      this.bridge.getWebView().resumeTimers();
-                      this.bridge.getWebView().onResume(); 
-                  }
-              }
-
-              @Override
-              public void onDestroy() {
-                  super.onDestroy();
-                  if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
-                  if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
-                  if (pipReceiver != null) unregisterReceiver(pipReceiver);
+              public void onBackPressed() {
+                  if (web.canGoBack()) web.goBack();
+                  else super.onBackPressed();
               }
           }
           EOF
 
-      - name: Fix Kotlin Duplicate Classes (Gradle Bug)
-        run: |
-          cat <<'EOF' >> android/app/build.gradle
-          
-          dependencies {
-              constraints {
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
-                      because("kotlin-stdlib-jdk7 is now a part of kotlin-stdlib")
-                  }
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
-                      because("kotlin-stdlib-jdk8 is now a part of kotlin-stdlib")
-                  }
-              }
-          }
-          EOF
+          # ---------- inject values (perl keeps special chars like & safe) ----------
+          export PKG="$PACKAGE_NAME"
+          for f in app/build.gradle app/src/main/AndroidManifest.xml app/src/main/java/$PKG_PATH/MainActivity.java; do
+            perl -pi -e 's/__PKG__/$ENV{PKG}/g; s/__BASE_URL__/$ENV{BASE_URL}/g; s/__BLOCK_API__/$ENV{BLOCK_API}/g; s/__APP_NAME__/$ENV{APP_NAME}/g; s/__ICON_REF__/$ENV{ICON_REF}/g' "$f"
+          done
 
-      - name: Generate App Icon & Splash Screen
-        run: |
-          sudo apt-get install -y imagemagick
-          mkdir -p assets
-          
-          wget -q https://raw.githubusercontent.com/Ayush8481Lab/Ayushgaana/refs/heads/main/app/android-chrome-512x512.png -O assets/icon.png
-          convert -size 2732x2732 xc:"#000000" assets/icon.png -gravity center -composite assets/splash.png
-          npx @capacitor/assets generate --android
+      - name: Build debug APK
+        working-directory: webapp
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Fix Gradle Daemon & Memory Issues (CI Stability)
+      - name: Rename APK
         run: |
-          echo "org.gradle.daemon=false" >> android/gradle.properties
-          echo "org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
+          mkdir -p out
+          cp webapp/app/build/outputs/apk/debug/app-debug.apk "out/webapp.apk"
 
-      - name: Generate Android Keystore (For App Signing)
-        run: |
-          keytool -genkey -v -keystore android.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Music8481, OU=App, O=Music8481, C=IN"
-
-      - name: Build & Auto-Sign Android APK (Release)
-        run: |
-          cd android
-          ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=${{ github.workspace }}/android.keystore \
-            -Pandroid.injected.signing.store.password=password123 \
-            -Pandroid.injected.signing.key.alias=android \
-            -Pandroid.injected.signing.key.password=password123
-
-      - name: Upload Independent APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Music8481-Independent-APK
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: web-apk
+          path: out/webapp.apk
+          if-no-files-found: error
