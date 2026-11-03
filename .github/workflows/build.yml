@@ -41,10 +41,10 @@ env:
   BASE_URL: ${{ github.event.inputs.base_url || 'https://hotstar.com' }}
 
   # >>> APP NAME shown on the phone <<<
-  APP_NAME: ${{ github.event.inputs.app_name || 'hotstar' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'hottstar' }}
 
   # >>> PACKAGE NAME (unique id, lowercase, letters/dots only) <<<
-  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.hotak.webapp' }}
+  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.hotak.wep' }}
 
   # >>> BLOCK LIST API (old URL, JSON with blockDomains + blockUrls) <<<
   BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
