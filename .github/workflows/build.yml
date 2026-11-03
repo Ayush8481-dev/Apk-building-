@@ -42,10 +42,10 @@ env:
   # >>> PASTE YOUR BASE DOMAIN / INITIAL OPENING URL HERE <<<
   #     (must start with https:// or http://)
   # ---------------------------------------------------------------
-  BASE_URL: ${{ github.event.inputs.base_url || 'https://example.com' }}
+  BASE_URL: ${{ github.event.inputs.base_url || 'https://hotstar.com' }}
 
   # >>> APP NAME shown on the phone <<<
-  APP_NAME: ${{ github.event.inputs.app_name || 'My Web App' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'Veryhotstar' }}
 
   # >>> PACKAGE NAME (unique id, lowercase, letters/dots only) <<<
   PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.example.webapp' }}
@@ -54,7 +54,7 @@ env:
   BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
 
   # >>> OPTIONAL: direct link to a PNG icon (leave empty for default icon) <<<
-  ICON_URL: ''
+  ICON_URL: 'https://static.vecteezy.com/system/resources/previews/056/505/637/non_2x/jiohotstar-app-icon-on-transparent-background-free-png.png'
 
 jobs:
   build:
