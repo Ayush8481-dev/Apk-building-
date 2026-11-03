@@ -41,10 +41,10 @@ env:
   BASE_URL: ${{ github.event.inputs.base_url || 'https://hotstar.com' }}
 
   # >>> APP NAME shown on the phone <<<
-  APP_NAME: ${{ github.event.inputs.app_name || 'Hotstar' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'hotstar' }}
 
   # >>> PACKAGE NAME (unique id, lowercase, letters/dots only) <<<
-  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.ehotme.webapp' }}
+  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.hotak.webapp' }}
 
   # >>> BLOCK LIST API (old URL, JSON with blockDomains + blockUrls) <<<
   BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
@@ -209,6 +209,14 @@ jobs:
               private static final String BLOCK_API = "__BLOCK_API__";
               private static final String TAG = "WebApp";
 
+              // Desktop Chrome user agent (no "Mobile" / "Android" -> sites serve desktop layout)
+              private static final String DESKTOP_UA =
+                      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      + "Chrome/124.0.0.0 Safari/537.36";
+
+              // Layout width (px) forced on every page so mobile viewport tags are overridden
+              private static final int DESKTOP_WIDTH = 1024;
+
               private WebView web;
               private SharedPreferences prefs;
               private final Set<String> blockDomains = Collections.synchronizedSet(new HashSet<String>());
@@ -226,12 +234,29 @@ jobs:
                   s.setJavaScriptEnabled(true);
                   s.setDomStorageEnabled(true);
                   s.setDatabaseEnabled(true);
-                  s.setLoadWithOverviewMode(true);
-                  s.setUseWideViewPort(true);
+                  // ---- ALWAYS DESKTOP MODE ----
+                  s.setUserAgentString(DESKTOP_UA);      // desktop Chrome user agent
+                  s.setUseWideViewPort(true);            // render on a wide (desktop) canvas
+                  s.setLoadWithOverviewMode(true);       // fit page to screen width
+                  s.setSupportZoom(true);                // pinch zoom
+                  s.setBuiltInZoomControls(true);
+                  s.setDisplayZoomControls(false);
+                  s.setTextZoom(100);
                   s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
                   web.setWebChromeClient(new WebChromeClient());
                   web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          super.onPageFinished(view, url);
+                          // Override the site's mobile <meta viewport> to keep desktop layout
+                          view.evaluateJavascript(
+                              "(function(){var m=document.querySelector('meta[name=viewport]');"
+                              + "if(!m){m=document.createElement('meta');m.name='viewport';"
+                              + "document.head.appendChild(m);}"
+                              + "m.setAttribute('content','width=" + DESKTOP_WIDTH + "');})();", null);
+                      }
+
                       @Override
                       public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                           String url = request.getUrl().toString();
