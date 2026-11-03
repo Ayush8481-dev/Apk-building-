@@ -3,8 +3,12 @@ name: Build Web APK
 # =====================================================================
 #  WebView APK builder
 #  - Opens your website (BASE_URL) as the initial page inside the app
+#  - ALWAYS desktop mode, same layout width on phone and tablet
+#  - Full-screen video support (landscape, immersive, edge-to-edge)
+#  - Punch-hole / notch safe: page content never hides behind the camera,
+#    full-screen video fills the whole screen including the notch area
 #  - Downloads a block list (Block.json) from GitHub at every app start
-#    and blocks matching domains / URLs in all network requests
+#    and blocks exact domains / exact URL endpoints in network requests
 #    (cached locally so it also works when the list can't be fetched)
 #  - Builds a debug APK (installable directly) and uploads it as artifact
 #
@@ -38,19 +42,19 @@ env:
   # >>> PASTE YOUR BASE DOMAIN / INITIAL OPENING URL HERE <<<
   #     (must start with https:// or http://)
   # ---------------------------------------------------------------
-  BASE_URL: ${{ github.event.inputs.base_url || 'https://hotstar.com' }}
+  BASE_URL: ${{ github.event.inputs.base_url || 'https://example.com' }}
 
   # >>> APP NAME shown on the phone <<<
-  APP_NAME: ${{ github.event.inputs.app_name || 'hottstar' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'My Web App' }}
 
   # >>> PACKAGE NAME (unique id, lowercase, letters/dots only) <<<
-  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.hotak.wep' }}
+  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.example.webapp' }}
 
   # >>> BLOCK LIST API (old URL, JSON with blockDomains + blockUrls) <<<
   BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
 
   # >>> OPTIONAL: direct link to a PNG icon (leave empty for default icon) <<<
-  ICON_URL: 'https://static.vecteezy.com/system/resources/previews/056/505/637/non_2x/jiohotstar-app-icon-on-transparent-background-free-png.png'
+  ICON_URL: ''
 
 jobs:
   build:
@@ -156,12 +160,15 @@ jobs:
               <application
                   android:label="__APP_NAME__"
                   android:icon="__ICON_REF__"
+                  android:hardwareAccelerated="true"
                   android:usesCleartextTraffic="true"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+                      android:hardwareAccelerated="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|smallestScreenSize|screenLayout|uiMode|density|fontScale"
+                      android:windowSoftInputMode="adjustResize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -178,15 +185,26 @@ jobs:
           import android.app.Activity;
           import android.content.Intent;
           import android.content.SharedPreferences;
+          import android.content.pm.ActivityInfo;
+          import android.graphics.Bitmap;
+          import android.graphics.Color;
+          import android.graphics.drawable.ColorDrawable;
           import android.net.Uri;
+          import android.os.Build;
           import android.os.Bundle;
           import android.util.Log;
+          import android.view.DisplayCutout;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowInsets;
+          import android.view.WindowManager;
           import android.webkit.WebChromeClient;
           import android.webkit.WebResourceRequest;
           import android.webkit.WebResourceResponse;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
 
           import org.json.JSONArray;
           import org.json.JSONObject;
@@ -214,11 +232,32 @@ jobs:
                       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                       + "Chrome/124.0.0.0 Safari/537.36";
 
-              // Layout width (px) forced on every page so mobile viewport tags are overridden
+              // Layout width (px) forced on EVERY device (phone + tablet get the same layout).
+              // Bigger number = more content on screen but smaller text (e.g. 1280).
+              // Smaller number = bigger text (e.g. 980).
               private static final int DESKTOP_WIDTH = 1024;
 
+              // Keeps the viewport forced to DESKTOP_WIDTH even if the site rewrites its <meta viewport>
+              private static final String VIEWPORT_JS =
+                      "(function(){if(window.__dw)return;window.__dw=1;"
+                      + "var C='width=" + DESKTOP_WIDTH + ", user-scalable=yes';"
+                      + "function a(){var h=document.head||document.documentElement;if(!h)return;"
+                      + "var m=document.querySelector('meta[name=viewport]');"
+                      + "if(!m){m=document.createElement('meta');m.name='viewport';h.appendChild(m);}"
+                      + "if(m.getAttribute('content')!==C)m.setAttribute('content',C);}"
+                      + "a();new MutationObserver(a).observe(document.documentElement,"
+                      + "{childList:true,subtree:true,attributes:true,attributeFilter:['content']});})();";
+
+              private FrameLayout frame;              // root (black, never padded)
+              private FrameLayout content;            // holds the WebView, padded to the safe area
+              private FrameLayout fullscreenContainer; // holds the full-screen video view
               private WebView web;
               private SharedPreferences prefs;
+
+              private View customView;
+              private WebChromeClient.CustomViewCallback customCallback;
+              private int padL, padT, padR, padB;
+
               private final Set<String> blockDomains = Collections.synchronizedSet(new HashSet<String>());
               private final Set<String> blockUrls = Collections.synchronizedSet(new HashSet<String>());
 
@@ -227,34 +266,128 @@ jobs:
                   super.onCreate(savedInstanceState);
                   prefs = getSharedPreferences("blocklist", MODE_PRIVATE);
 
-                  web = new WebView(this);
-                  setContentView(web);
+                  // ---------- window: black bars + draw into the camera cut-out area ----------
+                  Window w = getWindow();
+                  w.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+                  w.setStatusBarColor(Color.BLACK);
+                  w.setNavigationBarColor(Color.BLACK);
+                  if (Build.VERSION.SDK_INT >= 28) {
+                      WindowManager.LayoutParams lp = w.getAttributes();
+                      lp.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30
+                              ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                              : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      w.setAttributes(lp);
+                  }
 
+                  // ---------- views ----------
+                  frame = new FrameLayout(this);
+                  frame.setBackgroundColor(Color.BLACK);
+
+                  content = new FrameLayout(this);
+                  web = new WebView(this);
+                  content.addView(web, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+                  fullscreenContainer = new FrameLayout(this);
+                  fullscreenContainer.setBackgroundColor(Color.BLACK);
+                  fullscreenContainer.setVisibility(View.GONE);
+
+                  frame.addView(content, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                  frame.addView(fullscreenContainer, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                  setContentView(frame);
+
+                  applyNormalSystemUi();
+
+                  // Keep normal page content out of the status bar / navigation bar / camera hole
+                  frame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                      @Override
+                      public WindowInsets onApplyWindowInsets(View v, WindowInsets in) {
+                          int l = in.getSystemWindowInsetLeft();
+                          int t = in.getSystemWindowInsetTop();
+                          int r = in.getSystemWindowInsetRight();
+                          int b = in.getSystemWindowInsetBottom();
+                          if (Build.VERSION.SDK_INT >= 28) {
+                              DisplayCutout dc = in.getDisplayCutout();
+                              if (dc != null) {
+                                  l = Math.max(l, dc.getSafeInsetLeft());
+                                  t = Math.max(t, dc.getSafeInsetTop());
+                                  r = Math.max(r, dc.getSafeInsetRight());
+                                  b = Math.max(b, dc.getSafeInsetBottom());
+                              }
+                          }
+                          padL = l; padT = t; padR = r; padB = b;
+                          if (customView == null) content.setPadding(l, t, r, b);
+                          return in;
+                      }
+                  });
+                  frame.requestApplyInsets();
+
+                  // ---------- WebView settings ----------
                   WebSettings s = web.getSettings();
                   s.setJavaScriptEnabled(true);
                   s.setDomStorageEnabled(true);
                   s.setDatabaseEnabled(true);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+
                   // ---- ALWAYS DESKTOP MODE ----
-                  s.setUserAgentString(DESKTOP_UA);      // desktop Chrome user agent
-                  s.setUseWideViewPort(true);            // render on a wide (desktop) canvas
-                  s.setLoadWithOverviewMode(true);       // fit page to screen width
-                  s.setSupportZoom(true);                // pinch zoom
+                  s.setUserAgentString(DESKTOP_UA);
+                  s.setUseWideViewPort(true);
+                  s.setLoadWithOverviewMode(true);
+                  s.setSupportZoom(true);
                   s.setBuiltInZoomControls(true);
                   s.setDisplayZoomControls(false);
                   s.setTextZoom(100);
-                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
-                  web.setWebChromeClient(new WebChromeClient());
+                  // ---------- full-screen video ----------
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onShowCustomView(View view, CustomViewCallback callback) {
+                          if (customView != null) {
+                              callback.onCustomViewHidden();
+                              return;
+                          }
+                          customView = view;
+                          customCallback = callback;
+                          fullscreenContainer.addView(view, new FrameLayout.LayoutParams(
+                                  FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                          fullscreenContainer.setVisibility(View.VISIBLE);
+                          content.setVisibility(View.INVISIBLE);
+                          getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                          setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                          applyFullscreenSystemUi();
+                      }
+
+                      @Override
+                      public void onHideCustomView() {
+                          exitCustomView();
+                      }
+
+                      @Override
+                      public Bitmap getDefaultVideoPoster() {
+                          return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+                      }
+                  });
+
                   web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          super.onPageStarted(view, url, favicon);
+                          view.evaluateJavascript(VIEWPORT_JS, null);
+                      }
+
+                      @Override
+                      public void onPageCommitVisible(WebView view, String url) {
+                          super.onPageCommitVisible(view, url);
+                          view.evaluateJavascript(VIEWPORT_JS, null);
+                      }
+
                       @Override
                       public void onPageFinished(WebView view, String url) {
                           super.onPageFinished(view, url);
-                          // Override the site's mobile <meta viewport> to keep desktop layout
-                          view.evaluateJavascript(
-                              "(function(){var m=document.querySelector('meta[name=viewport]');"
-                              + "if(!m){m=document.createElement('meta');m.name='viewport';"
-                              + "document.head.appendChild(m);}"
-                              + "m.setAttribute('content','width=" + DESKTOP_WIDTH + "');})();", null);
+                          view.evaluateJavascript(VIEWPORT_JS, null);
                       }
 
                       @Override
@@ -309,6 +442,54 @@ jobs:
                       }
                   }).start();
               }
+
+              // ---------------- system UI helpers ----------------
+
+              // Normal browsing: bars visible, content drawn edge-to-edge but padded to the safe area
+              private void applyNormalSystemUi() {
+                  getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+              }
+
+              // Full-screen video: hide every bar, video fills the whole screen incl. camera area
+              private void applyFullscreenSystemUi() {
+                  getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+              }
+
+              private void exitCustomView() {
+                  if (customView == null) return;
+                  fullscreenContainer.removeView(customView);
+                  fullscreenContainer.setVisibility(View.GONE);
+                  content.setVisibility(View.VISIBLE);
+                  customView = null;
+                  WebChromeClient.CustomViewCallback cb = customCallback;
+                  customCallback = null;
+                  if (cb != null) cb.onCustomViewHidden();
+                  getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                  applyNormalSystemUi();
+                  content.setPadding(padL, padT, padR, padB);
+                  frame.requestApplyInsets();
+              }
+
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) {
+                      if (customView != null) applyFullscreenSystemUi();
+                      else applyNormalSystemUi();
+                  }
+              }
+
+              // ---------------- block list ----------------
 
               private boolean parse(String json) {
                   try {
@@ -383,8 +564,25 @@ jobs:
 
               @Override
               public void onBackPressed() {
-                  if (web.canGoBack()) web.goBack();
-                  else super.onBackPressed();
+                  if (customView != null) {
+                      exitCustomView();           // leave full-screen video first
+                  } else if (web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  web.onPause();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
               }
           }
           EOF
