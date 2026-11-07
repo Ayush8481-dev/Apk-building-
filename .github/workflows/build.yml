@@ -979,6 +979,7 @@ jobs:
           import okhttp3.OkHttpClient
           import java.io.IOException
           import java.util.concurrent.TimeUnit
+          import kotlin.math.abs
 
           /** Small ring buffer of recent HTTP activity, shown in the player's "Network log" dialog. */
           object NetLog {
@@ -1003,31 +1004,83 @@ jobs:
           }
 
           /**
-           * RFC 6265 cookie jar (OkHttp's own matching rules: domain, path, secure, expiry).
-           * Cookies set by the manifest / CDN are replayed on segment, key and license requests.
+           * Cookie jar tuned for IPTV / CDN streams (closer to how TiviMate behaves than a strict RFC jar):
+           *  - cookies set by the manifest (MPD / m3u8), a redirect, a 401/403 or a key/license response
+           *    are replayed on every later segment, key and license request;
+           *  - cookies are also sent to sibling hosts of the same site (origin.cdn.com -> seg3.cdn.com),
+           *    which strict host-only matching would silently drop;
+           *  - expiry is evaluated against the SERVER clock (Date header), so a wrong device clock
+           *    can no longer make fresh CDN token cookies look expired;
+           *  - Set-Cookie lines OkHttp refuses to parse are still kept (lenient fallback).
            * [fixed] holds a manual "Cookie: a=b; c=d" value from the playlist, sent to every host.
            */
           class MemoryCookieJar : CookieJar {
-              private val store = ArrayList<Cookie>()
+              private class Entry(val c: Cookie, val origin: String)
+
+              private val store = ArrayList<Entry>()
 
               @Volatile
               var fixed: String = ""
 
+              /** server clock minus device clock (ms); 0 when the device clock is fine */
+              @Volatile
+              var skew: Long = 0L
+
+              private fun now(): Long = System.currentTimeMillis() + skew
+
+              private val secondLevel = setOf("co", "com", "org", "net", "gov", "edu", "ac", "or", "ne", "go")
+
+              private fun base(host: String): String {
+                  if (host.contains(':') || host.all { it.isDigit() || it == '.' }) return host
+                  val p = host.split('.')
+                  if (p.size <= 2) return host
+                  val n = if (p.last().length == 2 && p[p.size - 2] in secondLevel) 3 else 2
+                  return p.takeLast(n).joinToString(".")
+              }
+
+              private fun sibling(e: Entry, url: HttpUrl): Boolean {
+                  if (base(e.origin) != base(url.host)) return false
+                  if (e.c.secure && !url.isHttps) return false
+                  val p = e.c.path
+                  return p == "/" || url.encodedPath.startsWith(p)
+              }
+
               @Synchronized
               override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-                  val now = System.currentTimeMillis()
+                  val now = now()
                   for (c in cookies) {
-                      store.removeAll { it.name == c.name && it.domain == c.domain && it.path == c.path }
-                      if (c.expiresAt > now) store.add(c) // an already-expired cookie is a delete request
+                      store.removeAll { it.c.name == c.name && it.c.domain == c.domain && it.c.path == c.path }
+                      // an already-expired (or empty) cookie is a delete request
+                      if (c.expiresAt > now && c.value.isNotEmpty()) store.add(Entry(c, url.host))
+                  }
+              }
+
+              /** Fallback for Set-Cookie lines OkHttp's strict parser rejects. */
+              @Synchronized
+              fun addLoose(url: HttpUrl, name: String, value: String) {
+                  if (name.isEmpty() || value.isEmpty()) return
+                  try {
+                      val c = Cookie.Builder().name(name).value(value).hostOnlyDomain(url.host).path("/").build()
+                      store.removeAll { it.c.name == name && it.c.domain == c.domain && it.c.path == "/" }
+                      store.add(Entry(c, url.host))
+                  } catch (e: Exception) {
+                      // ignore
                   }
               }
 
               @Synchronized
               override fun loadForRequest(url: HttpUrl): List<Cookie> {
-                  val now = System.currentTimeMillis()
-                  store.removeAll { it.expiresAt <= now }
+                  val now = now()
+                  store.removeAll { it.c.expiresAt <= now }
                   val out = ArrayList<Cookie>()
-                  for (c in store) if (c.matches(url)) out.add(c)
+                  val seen = HashSet<String>()
+                  for (e in store.sortedByDescending { it.c.path.length }) {
+                      if (e.c.name in seen) continue
+                      if (e.c.matches(url) || sibling(e, url)) {
+                          out.add(e.c)
+                          seen.add(e.c.name)
+                      }
+                  }
                   val f = fixed
                   if (f.isNotBlank()) {
                       for (part in f.split(';')) {
@@ -1035,7 +1088,7 @@ jobs:
                           if (i <= 0) continue
                           val n = part.substring(0, i).trim()
                           val v = part.substring(i + 1).trim()
-                          if (n.isEmpty() || out.any { it.name == n }) continue
+                          if (n.isEmpty() || n in seen) continue
                           try {
                               out.add(Cookie.Builder().name(n).value(v).domain(url.host).build())
                           } catch (e: Exception) {
@@ -1049,6 +1102,7 @@ jobs:
               @Synchronized
               fun clear() {
                   store.clear()
+                  skew = 0L
               }
           }
 
@@ -1057,13 +1111,35 @@ jobs:
 
               private fun where(url: HttpUrl): String = url.host + url.encodedPath.takeLast(60)
 
+              // Network interceptor: runs for EVERY hop (redirects, 401/403 retries) before the cookie jar sees the response.
               private val logger = Interceptor { chain ->
                   val req = chain.request()
                   val t0 = System.currentTimeMillis()
                   val sent = req.header("Cookie")?.split(';')?.map { it.substringBefore('=').trim() } ?: emptyList()
                   try {
                       val resp = chain.proceed(req)
-                      val set = resp.headers("Set-Cookie").map { it.substringBefore('=').trim() }
+
+                      // learn server-vs-device clock difference so cookie expiry is judged on the server's time
+                      resp.headers.getDate("Date")?.let { d ->
+                          val diff = d.time - System.currentTimeMillis()
+                          jar.skew = if (abs(diff) > 300_000L) diff else 0L
+                      }
+
+                      // keep cookies that OkHttp's strict parser rejects (odd Domain=, attributes, etc.)
+                      val rawSet = resp.headers("Set-Cookie")
+                      for (h in rawSet) {
+                          if (Cookie.parse(req.url, h) == null) {
+                              val nv = h.substringBefore(';')
+                              val i = nv.indexOf('=')
+                              if (i > 0) {
+                                  val n = nv.substring(0, i).trim()
+                                  jar.addLoose(req.url, n, nv.substring(i + 1).trim())
+                                  NetLog.add("lenient cookie kept: $n")
+                              }
+                          }
+                      }
+
+                      val set = rawSet.map { it.substringBefore('=').trim() }
                       val loc = resp.header("Location")?.let { req.url.resolve(it)?.host }
                       val sb = StringBuilder()
                       sb.append(resp.code).append(' ').append(req.method).append(' ').append(where(req.url))
@@ -1308,10 +1384,10 @@ jobs:
                           }
                           val detail = describe(e)
                           val isDrm = e.errorCode in 6000..6999
-                          if (!isDrm && retries < 3) {
+                          if (!isDrm && retries < 5) {
                               retries++
-                              error = "Reconnecting ($retries/3)\n$detail" + netTail()
-                              handler.postDelayed({ player.prepare() }, 2500)
+                              error = "Reconnecting ($retries/5)\n$detail" + netTail()
+                              handler.postDelayed({ player.prepare() }, 1200)
                           } else {
                               error = "Playback failed\n$detail" + hint(e.errorCode) + netTail()
                           }
