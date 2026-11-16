@@ -1,14 +1,15 @@
 name: Build Web APK
 
 # =====================================================================
-#  WebView APK builder  (TV-only experience + Mobile Popup Test Remote)
+#  WebView APK builder  (TV-only experience + Mobile Floating Remote)
+#  - Landscape-only on all devices (TV & mobile testing)
 #  - Opens BASE_URL inside the app, ALWAYS 1280px TV/desktop layout
-#  - Full-screen immersive landscape video + Widevine/cookie support
+#  - Full-screen immersive video + Widevine/cookie support
 #  - Block list (Block.json) downloaded at every start + cached
 #  - Android TV: Leanback launcher, real D-pad & media keys mapped to
 #    spatial navigation & video controls (no on-screen remote shown)
-#  - Mobile (for testing): Forced TV landscape + draggable popup remote
-#    overlay with Touch-Lock ("Touch: OFF") to simulate TV strictly
+#  - Mobile (testing): Floating draggable popup remote overlay with
+#    Touch-Lock ("Touch: OFF") to simulate TV strictly
 #
 #  HOW TO USE:
 #   1. Save as  .github/workflows/build-apk.yml
@@ -29,7 +30,7 @@ on:
         description: "Package name (e.g. com.example.webapp)"
         required: false
       show_remote:
-        description: "Show popup test remote on mobile phones (true/false)"
+        description: "Show floating test remote on mobile phones (true/false)"
         required: false
         default: 'true'
   push:
@@ -142,7 +143,7 @@ jobs:
           }
           EOF
 
-          # ---------- AndroidManifest.xml (TV + Mobile testing) ----------
+          # ---------- AndroidManifest.xml (Landscape-only, TV + Mobile testing) ----------
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -161,6 +162,7 @@ jobs:
                       android:name=".MainActivity"
                       android:exported="true"
                       android:hardwareAccelerated="true"
+                      android:screenOrientation="sensorLandscape"
                       android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|smallestScreenSize|screenLayout|uiMode|density|fontScale"
                       android:windowSoftInputMode="adjustResize">
                       <intent-filter>
@@ -491,7 +493,7 @@ jobs:
 
               private static final String BASE_URL  = "__BASE_URL__";
               private static final String BLOCK_API = "__BLOCK_API__";
-              private static final boolean SHOW_REMOTE_ON_PHONE = "__SHOW_REMOTE__".equals("true");
+              private static final boolean SHOW_REMOTE_ON_PHONE = !"false".equalsIgnoreCase("__SHOW_REMOTE__");
               private static final String TAG = "WebApp";
 
               private static final String DESKTOP_UA =
@@ -550,10 +552,8 @@ jobs:
                   prefs = getSharedPreferences("blocklist", MODE_PRIVATE);
                   navJs = readAsset("nav.js");
 
-                  // Force landscape on mobile to match TV aspect ratio
-                  if (!isTv()) {
-                      setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-                  }
+                  // Strictly landscape-only
+                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
                   Window w = getWindow();
                   w.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
@@ -587,9 +587,12 @@ jobs:
                   frame.addView(fullscreenContainer, new FrameLayout.LayoutParams(
                           FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-                  // Popup overlay test remote: shown ONLY on non-TV devices
+                  // Floating popup test remote: shown ONLY on mobile / non-TV devices
+                  Log.d(TAG, "isTv=" + isTv() + " showRemote=" + SHOW_REMOTE_ON_PHONE);
                   if (SHOW_REMOTE_ON_PHONE && !isTv()) {
-                      frame.addView(buildPopupRemote());
+                      View remote = buildPopupRemote();
+                      frame.addView(remote);
+                      remote.bringToFront();
                   }
                   setContentView(frame);
 
@@ -647,6 +650,7 @@ jobs:
                                   FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
                           fullscreenContainer.setVisibility(View.VISIBLE);
                           content.setVisibility(View.INVISIBLE);
+                          if (remoteOverlay != null) remoteOverlay.bringToFront();
                           getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                           applyFullscreenSystemUi();
                       }
@@ -753,7 +757,7 @@ jobs:
                   web.requestFocus();
               }
 
-              // ---------------- TV & Popup Remote Control ----------------
+              // ---------------- TV & Floating Popup Remote Control ----------------
 
               private boolean isTv() {
                   UiModeManager um = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
@@ -768,7 +772,6 @@ jobs:
                   web.evaluateJavascript("window.__tvVid&&window.__tvVid('" + cmd + "')", null);
               }
 
-              // Unified action handler for real TV remotes AND mobile popup remote
               private void press(String cmd) {
                   if ("back".equals(cmd)) { onBackPressed(); return; }
                   if ("reload".equals(cmd)) { web.reload(); return; }
@@ -829,9 +832,9 @@ jobs:
                   b.setMinimumHeight(0);
                   b.setFocusable(false);
                   GradientDrawable bg = new GradientDrawable();
-                  bg.setColor("ok".equals(cmd) ? Color.argb(230, 30, 128, 255) : Color.argb(220, 42, 44, 56));
+                  bg.setColor("ok".equals(cmd) ? Color.argb(240, 30, 128, 255) : Color.argb(230, 44, 46, 60));
                   bg.setCornerRadius(dp(10));
-                  bg.setStroke(dp(1), Color.argb(120, 255, 255, 255));
+                  bg.setStroke(dp(1), Color.argb(140, 255, 255, 255));
                   b.setBackground(bg);
                   LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(h));
                   lp.setMargins(dp(3), dp(3), dp(3), dp(3));
@@ -911,6 +914,7 @@ jobs:
               }
 
               private void setOverlayTranslation(float tx, float ty) {
+                  if (frame.getWidth() == 0 || frame.getHeight() == 0) return;
                   float minTx = -remoteOverlay.getLeft();
                   float maxTx = frame.getWidth() - remoteOverlay.getRight();
                   float minTy = -remoteOverlay.getTop();
@@ -923,34 +927,36 @@ jobs:
 
               private View buildPopupRemote() {
                   remoteOverlay = new FrameLayout(this);
+                  remoteOverlay.setElevation(dp(32));
 
-                  // Floating minimized pill
+                  // Floating minimized pill (tap to pop open, drag anywhere)
                   remotePill = new TextView(this);
                   remotePill.setText("\uD83D\uDCFA Remote");
                   remotePill.setTextColor(Color.WHITE);
                   remotePill.setTextSize(13);
-                  remotePill.setPadding(dp(14), dp(8), dp(14), dp(8));
+                  remotePill.setPadding(dp(14), dp(9), dp(14), dp(9));
                   GradientDrawable pillBg = new GradientDrawable();
-                  pillBg.setColor(Color.argb(230, 22, 96, 210));
+                  pillBg.setColor(Color.argb(240, 22, 96, 210));
                   pillBg.setCornerRadius(dp(20));
-                  pillBg.setStroke(dp(1), Color.argb(160, 255, 255, 255));
+                  pillBg.setStroke(dp(1), Color.argb(190, 255, 255, 255));
                   remotePill.setBackground(pillBg);
                   attachDrag(remotePill, new Runnable() {
                       @Override public void run() { setPopupOpen(true); }
                   });
 
-                  // Expanded popup remote window
+                  // Floating expanded popup remote
                   remotePopup = new LinearLayout(this);
                   remotePopup.setOrientation(LinearLayout.VERTICAL);
                   remotePopup.setGravity(Gravity.CENTER_HORIZONTAL);
                   remotePopup.setPadding(dp(8), dp(8), dp(8), dp(8));
                   GradientDrawable popBg = new GradientDrawable();
-                  popBg.setColor(Color.argb(225, 18, 20, 28));
+                  popBg.setColor(Color.argb(232, 18, 20, 28));
                   popBg.setCornerRadius(dp(16));
-                  popBg.setStroke(dp(1), Color.argb(110, 255, 255, 255));
+                  popBg.setStroke(dp(1), Color.argb(140, 255, 255, 255));
                   remotePopup.setBackground(popBg);
+                  attachDrag(remotePopup, null);
 
-                  // Top bar (drag handle + touch lock toggle + close)
+                  // Top bar (drag handle + touch lock toggle + minimize)
                   LinearLayout topBar = new LinearLayout(this);
                   topBar.setOrientation(LinearLayout.HORIZONTAL);
                   topBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -960,10 +966,10 @@ jobs:
                   topBar.setLayoutParams(topLp);
 
                   TextView dragTitle = new TextView(this);
-                  dragTitle.setText("\uD83D\uDCFA TV Remote");
+                  dragTitle.setText("\uD83D\uDCFA Remote");
                   dragTitle.setTextColor(Color.WHITE);
                   dragTitle.setTextSize(12);
-                  dragTitle.setPadding(dp(4), dp(2), dp(8), dp(2));
+                  dragTitle.setPadding(dp(4), dp(2), dp(6), dp(2));
                   LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
                           0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
                   dragTitle.setLayoutParams(titleLp);
@@ -972,7 +978,7 @@ jobs:
                   touchToggleBtn = new TextView(this);
                   touchToggleBtn.setTextColor(Color.WHITE);
                   touchToggleBtn.setTextSize(11);
-                  touchToggleBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+                  touchToggleBtn.setPadding(dp(7), dp(4), dp(7), dp(4));
                   updateTouchToggleUi();
                   touchToggleBtn.setOnClickListener(new View.OnClickListener() {
                       @Override public void onClick(View v) {
@@ -996,17 +1002,17 @@ jobs:
 
                   // D-pad + media/back buttons
                   LinearLayout r1 = row();
-                  r1.addView(remoteButton("\u25B2", "up", true, 50, 44));
+                  r1.addView(remoteButton("\u25B2", "up", true, 50, 42));
                   LinearLayout r2 = row();
-                  r2.addView(remoteButton("\u25C0", "left", true, 50, 44));
-                  r2.addView(remoteButton("OK", "ok", false, 52, 44));
-                  r2.addView(remoteButton("\u25B6", "right", true, 50, 44));
+                  r2.addView(remoteButton("\u25C0", "left", true, 50, 42));
+                  r2.addView(remoteButton("OK", "ok", false, 52, 42));
+                  r2.addView(remoteButton("\u25B6", "right", true, 50, 42));
                   LinearLayout r3 = row();
-                  r3.addView(remoteButton("\u25BC", "down", true, 50, 44));
+                  r3.addView(remoteButton("\u25BC", "down", true, 50, 42));
                   LinearLayout r4 = row();
-                  r4.addView(remoteButton("\u21A9 Back", "back", false, 68, 38));
-                  r4.addView(remoteButton("\u23EF", "toggle", false, 42, 38));
-                  r4.addView(remoteButton("\u27F3", "reload", false, 42, 38));
+                  r4.addView(remoteButton("\u21A9 Back", "back", false, 68, 36));
+                  r4.addView(remoteButton("\u23EF", "toggle", false, 42, 36));
+                  r4.addView(remoteButton("\u27F3", "reload", false, 42, 36));
 
                   remotePopup.addView(topBar);
                   remotePopup.addView(r1);
@@ -1014,16 +1020,19 @@ jobs:
                   remotePopup.addView(r3);
                   remotePopup.addView(r4);
 
-                  remoteOverlay.addView(remotePopup);
-                  remoteOverlay.addView(remotePill);
+                  remoteOverlay.addView(remotePopup, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+                  remoteOverlay.addView(remotePill, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT));
 
                   boolean open = prefs.getBoolean("remote_open", true);
-                  setPopupOpen(open);
+                  remotePopup.setVisibility(open ? View.VISIBLE : View.GONE);
+                  remotePill.setVisibility(open ? View.GONE : View.VISIBLE);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                           FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
-                  lp.gravity = Gravity.BOTTOM | Gravity.END;
-                  lp.setMargins(dp(16), dp(16), dp(20), dp(20));
+                  lp.gravity = Gravity.CENTER_VERTICAL | Gravity.END;
+                  lp.setMargins(dp(12), dp(12), dp(16), dp(12));
                   remoteOverlay.setLayoutParams(lp);
                   return remoteOverlay;
               }
@@ -1033,10 +1042,10 @@ jobs:
                   bg.setCornerRadius(dp(8));
                   if (blockWebTouch) {
                       touchToggleBtn.setText("Touch: OFF");
-                      bg.setColor(Color.argb(210, 180, 50, 50));
+                      bg.setColor(Color.argb(220, 185, 50, 50));
                   } else {
                       touchToggleBtn.setText("Touch: ON");
-                      bg.setColor(Color.argb(210, 35, 145, 75));
+                      bg.setColor(Color.argb(220, 35, 145, 75));
                   }
                   touchToggleBtn.setBackground(bg);
               }
@@ -1084,6 +1093,7 @@ jobs:
                   fullscreenContainer.removeView(customView);
                   fullscreenContainer.setVisibility(View.GONE);
                   content.setVisibility(View.VISIBLE);
+                  if (remoteOverlay != null) remoteOverlay.bringToFront();
                   customView = null;
                   WebChromeClient.CustomViewCallback cb = customCallback;
                   customCallback = null;
@@ -1191,6 +1201,7 @@ jobs:
               protected void onResume() {
                   super.onResume();
                   web.onResume();
+                  if (remoteOverlay != null) remoteOverlay.bringToFront();
               }
           }
           EOF
