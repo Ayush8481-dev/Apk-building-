@@ -1,45 +1,100 @@
-name: Build APK
+name: Build Web APK
 
-# Single-file workflow: it writes the whole Android project during the run,
-# builds a debug APK and uploads it as an artifact. Nothing else is needed in the repo.
+# =====================================================================
+#  WebView APK builder  (TV + phone, remote-controllable)
+#  - Opens BASE_URL inside the app, ALWAYS desktop mode (same layout width)
+#  - Full-screen video (landscape, immersive, notch/punch-hole safe)
+#  - Block list (Block.json) downloaded at every start + cached
+#  - NEW: Android TV support (Leanback launcher, no touchscreen needed)
+#  - NEW: Spatial D-pad navigation injected into the page
+#         (up/down/left/right moves focus between cards, rows, buttons,
+#          auto-scrolls carousels and pages, OK = click)
+#  - NEW: Video remote controls in fullscreen
+#         (left/right = seek 10s, OK = play/pause, up/down = volume)
+#  - NEW: On-screen test remote (Up/Down/Left/Right/OK/Back) shown on
+#         phones so you can test everything without a TV. Hidden on TV.
+#         Hold an arrow to repeat. Tap "Remote" header to collapse it.
+#
+#  HOW TO USE:
+#   1. Save as  .github/workflows/build-apk.yml
+#   2. Edit the env values below (or Actions -> Run workflow)
+#   3. Download the APK from the run's "Artifacts"
+#
+#  TEST WITHOUT A REMOTE (adb):
+#   adb shell input keyevent KEYCODE_DPAD_RIGHT   (also LEFT/UP/DOWN)
+#   adb shell input keyevent KEYCODE_DPAD_CENTER  (OK)
+#   adb shell input keyevent KEYCODE_BACK
+# =====================================================================
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Base domain / initial URL (e.g. https://yourdomain.com)"
+        required: false
+      app_name:
+        description: "App name"
+        required: false
+      package_name:
+        description: "Package name (e.g. com.example.webapp)"
+        required: false
+      show_remote:
+        description: "Show on-screen test remote on phones (true/false)"
+        required: false
+        default: 'true'
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+env:
+  BASE_URL: ${{ github.event.inputs.base_url || 'https://hotstar.com' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'Veryhotstar' }}
+  PACKAGE_NAME: ${{ github.event.inputs.package_name || 'com.example.webapp' }}
+  SHOW_REMOTE: ${{ github.event.inputs.show_remote || 'true' }}
+  BLOCK_API: 'https://raw.githubusercontent.com/Ayush8481-dev/Ayush/refs/heads/main/Block.json'
+  ICON_URL: 'https://static.vecteezy.com/system/resources/previews/056/505/637/non_2x/jiohotstar-app-icon-on-transparent-background-free-png.png'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-
-      - name: Set up Android SDK (accept licenses, install platform 34)
-        run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
-          yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+          java-version: '17'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.7
+          gradle-version: '8.7'
 
-      - name: Generate project files
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Generate Android WebView project
         run: |
-          mkdir -p app/src/main/java/com/example/keysniffer app/src/main/assets
-          cat > settings.gradle <<'KS_EOF'
+          set -e
+          mkdir -p webapp && cd webapp
+          PKG_PATH=$(echo "$PACKAGE_NAME" | tr . /)
+          mkdir -p app/src/main/java/$PKG_PATH
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/assets
+
+          # ---------- optional icon ----------
+          if [ -n "$ICON_URL" ]; then
+            curl -fsSL "$ICON_URL" -o app/src/main/res/drawable/ic_launcher.png
+            export ICON_REF="@drawable/ic_launcher"
+          else
+            export ICON_REF="@android:drawable/sym_def_app_icon"
+          fi
+
+          # ---------- settings.gradle ----------
+          cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -47,605 +102,911 @@ jobs:
                   gradlePluginPortal()
               }
           }
-
           dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               repositories {
                   google()
                   mavenCentral()
               }
           }
-
-          rootProject.name = "KeySniffer"
+          rootProject.name = "WebApp"
           include ':app'
-          KS_EOF
-          cat > build.gradle <<'KS_EOF'
+          EOF
+
+          # ---------- root build.gradle ----------
+          cat > build.gradle <<'EOF'
           plugins {
               id 'com.android.application' version '8.5.2' apply false
           }
-          KS_EOF
-          cat > gradle.properties <<'KS_EOF'
-          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          android.nonTransitiveRClass=true
-          KS_EOF
-          cat > app/build.gradle <<'KS_EOF'
+          EOF
+
+          # ---------- gradle.properties ----------
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          # ---------- app/build.gradle ----------
+          cat > app/build.gradle <<'EOF'
           plugins {
               id 'com.android.application'
           }
-
           android {
-              namespace 'com.example.keysniffer'
+              namespace '__PKG__'
               compileSdk 34
-
               defaultConfig {
-                  applicationId 'com.example.keysniffer'
-                  minSdk 24
+                  applicationId '__PKG__'
+                  minSdk 21
                   targetSdk 34
                   versionCode 1
                   versionName '1.0'
               }
-
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
               buildTypes {
                   release {
                       minifyEnabled false
                   }
               }
-
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
           }
+          EOF
 
-          dependencies {
-              implementation 'androidx.webkit:webkit:1.11.0'
-          }
-          KS_EOF
-          cat > app/src/main/AndroidManifest.xml <<'KS_EOF'
+          # ---------- AndroidManifest.xml (phone + Android TV) ----------
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
               <uses-permission android:name="android.permission.INTERNET" />
-
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
               <application
-                  android:allowBackup="false"
-                  android:label="Key Sniffer"
+                  android:label="__APP_NAME__"
+                  android:icon="__ICON_REF__"
+                  android:banner="__ICON_REF__"
+                  android:hardwareAccelerated="true"
                   android:usesCleartextTraffic="true"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
-
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      android:hardwareAccelerated="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|smallestScreenSize|screenLayout|uiMode|density|fontScale"
+                      android:windowSoftInputMode="adjustResize">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
                       </intent-filter>
                   </activity>
               </application>
           </manifest>
-          KS_EOF
-          cat > app/src/main/assets/hook.js <<'KS_EOF'
-          // Injected at document start. Hooks client-side decryption and reports
-          // Key / IV / output to the native app through the KH bridge.
+          EOF
+
+          # ---------- assets/nav.js : spatial D-pad navigation ----------
+          cat > app/src/main/assets/nav.js <<'JSEOF'
           (function () {
-            if (window.__kh) return;
-            window.__kh = true;
+            if (window.__tvnav) return;
 
-            var _btoa = window.btoa.bind(window);
-            var _atob = window.atob.bind(window);
+            var cur = null;
+            var SEL = 'a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"]),'
+                    + '[role=button],[role=link],[role=tab],[role=menuitem],[onclick],[data-focusable]';
+            var STRONG = 'a[href],button,input,select,textarea,[role=button],[role=link]';
+            var EDIT = /^(INPUT|TEXTAREA|SELECT)$/;
 
-            function send(o) {
-              try { KH.report(JSON.stringify(o)); } catch (e) {}
-            }
+            var st = document.createElement('style');
+            st.textContent = '.__tvf{outline:4px solid #fff !important;outline-offset:3px !important;'
+              + 'box-shadow:0 0 0 8px rgba(30,128,255,.9) !important;border-radius:8px}';
+            (document.head || document.documentElement).appendChild(st);
 
-            function toBytes(x) {
-              try {
-                if (x == null) return null;
-                if (x instanceof ArrayBuffer) return new Uint8Array(x.slice(0));
-                if (ArrayBuffer.isView(x)) {
-                  return new Uint8Array(x.buffer.slice(x.byteOffset, x.byteOffset + x.byteLength));
+            function vw() { return window.innerWidth; }
+            function vh() { return window.innerHeight; }
+
+            function cands() {
+              var out = [], all = document.body ? document.body.getElementsByTagName('*') : [];
+              var W = vw(), H = vh();
+              for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var strong = el.matches(SEL);
+                var r = el.getBoundingClientRect();
+                if (r.width < 8 || r.height < 8) continue;
+                if (r.bottom < -H || r.top > H * 2 || r.right < -W || r.left > W * 2) continue;
+                var cs = getComputedStyle(el);
+                if (cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none' || cs.opacity === '0') continue;
+                if (el.disabled) continue;
+                var ok = strong;
+                if (!ok && r.width >= 40 && r.height >= 24 && cs.cursor === 'pointer') {
+                  var p = el.parentElement;
+                  ok = !(p && getComputedStyle(p).cursor === 'pointer');
                 }
-              } catch (e) {}
-              return null;
-            }
-
-            function hex(u) {
-              var s = '';
-              for (var i = 0; i < u.length; i++) s += ('0' + u[i].toString(16)).slice(-2);
-              return s;
-            }
-
-            function b64(u) {
-              var s = '';
-              for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
-              return _btoa(s);
-            }
-
-            function utf8(u) {
-              try { return new TextDecoder('utf-8', { fatal: true }).decode(u); } catch (e) { return null; }
-            }
-
-            function describe(u) {
-              if (!u) return null;
-              var t = utf8(u);
-              if (t !== null && !/^[\x20-\x7e]*$/.test(t)) t = null; // only show readable text
-              return { len: u.length, hex: hex(u), b64: b64(u), utf8: t };
-            }
-
-            function preview(s) {
-              if (s == null) return null;
-              s = String(s);
-              return s.length > 400 ? s.slice(0, 400) + '…(' + s.length + ' chars)' : s;
-            }
-
-            // Heartbeat: proves the script ran in this frame and the native bridge works.
-            var where = '';
-            try { where = (window.top === window ? 'top ' : 'frame ') + location.href; } catch (e) { where = 'frame'; }
-            send({ src: 'hook', op: 'active', alg: '', out: preview(where) });
-
-            /* ---------------- WebCrypto (crypto.subtle) ---------------- */
-            if (window.SubtleCrypto && SubtleCrypto.prototype) {
-              var P = SubtleCrypto.prototype;
-              var keyMap = new WeakMap();
-              var oImport = P.importKey;
-              var oExport = P.exportKey;
-
-              P.importKey = function (format, keyData) {
-                var p = oImport.apply(this, arguments);
-                var raw = null, jwk = null;
-                if (format === 'raw') raw = toBytes(keyData);
-                else if (format === 'jwk') { try { jwk = JSON.stringify(keyData); } catch (e) {} }
-                return p.then(function (k) {
-                  keyMap.set(k, { raw: raw, jwk: jwk });
-                  return k;
-                });
-              };
-
-              P.exportKey = function (format) {
-                var p = oExport.apply(this, arguments);
-                p.then(function (r) {
-                  var u = toBytes(r);
-                  if (u) send({ src: 'WebCrypto', op: 'exportKey(' + format + ')', alg: '', key: describe(u) });
-                }, function () {});
-                return p;
-              };
-
-              var keyInfo = function (self, key) {
-                var m = keyMap.get(key);
-                if (m && m.raw) return Promise.resolve({ key: describe(m.raw) });
-                if (m && m.jwk) return Promise.resolve({ note: 'JWK key: ' + m.jwk });
-                return oExport.call(self, 'raw', key).then(
-                  function (r) { return { key: describe(toBytes(r)) }; },
-                  function () { return { note: 'key is non-extractable (derived/generated)' }; }
-                );
-              };
-
-              ['encrypt', 'decrypt'].forEach(function (op) {
-                var orig = P[op];
-                P[op] = function (algo, key, data) {
-                  var self = this;
-                  var result = orig.apply(this, arguments);
-                  var a = algo || {};
-                  var iv = toBytes(a.iv) || toBytes(a.counter);
-                  var aad = toBytes(a.additionalData);
-                  Promise.all([
-                    keyInfo(self, key),
-                    result.then(function (r) { return r; }, function () { return null; })
-                  ]).then(function (res) {
-                    var ki = res[0], out = res[1];
-                    var msg = {
-                      src: 'WebCrypto',
-                      op: op,
-                      alg: typeof algo === 'string' ? algo : (a.name || ''),
-                      key: ki.key || null,
-                      iv: describe(iv),
-                      aad: describe(aad),
-                      note: ki.note || null
-                    };
-                    var ob = toBytes(out);
-                    if (ob) {
-                      msg.out = op === 'decrypt' ? preview(utf8(ob) || ('(binary ' + ob.length + ' bytes) ' + hex(ob).slice(0, 120))) : ('(' + ob.length + ' bytes)');
-                    } else if (out === null) {
-                      msg.out = '(operation failed — wrong key/IV?)';
-                    }
-                    send(msg);
-                  });
-                  return result;
-                };
-              });
-            }
-
-            /* ---------------- CryptoJS (global OR bundled) ---------------- */
-            function wa(C, x) {
-              if (x == null) return null;
-              if (typeof x === 'string') return { len: x.length, utf8: x, note: 'string' };
-              if (x.words && typeof x.toString === 'function') {
-                var o = { len: x.sigBytes };
-                try { o.hex = x.toString(C.enc.Hex); } catch (e) {}
-                try { o.b64 = x.toString(C.enc.Base64); } catch (e) {}
-                try {
-                  var t = x.toString(C.enc.Utf8);
-                  if (/^[\x20-\x7e]*$/.test(t)) o.utf8 = t; // only show readable text
-                } catch (e) {}
-                return o;
+                if (ok) out.push(el);
               }
-              return null;
-            }
-
-            var CJS_NAMES = ['AES', 'DES', 'TripleDES', 'RC4', 'RC4Drop', 'Rabbit'];
-
-            // Wrap encrypt/decrypt of ONE cipher helper (e.g. CryptoJS.AES).
-            function hookCipher(C, name, c) {
-              if (!c || (typeof c !== 'object' && typeof c !== 'function') || c.__khc) return;
-              try { Object.defineProperty(c, '__khc', { value: 1 }); } catch (e) { return; }
-              ['encrypt', 'decrypt'].forEach(function (op) {
-                var orig = c[op];
-                if (typeof orig !== 'function') return;
-                c[op] = function (msg, key, cfg) {
-                  var r = orig.apply(this, arguments);
-                  try {
-                    var out;
-                    try { out = op === 'decrypt' ? r.toString(C.enc.Utf8) : String(r); }
-                    catch (e) { out = '(non-UTF8 output)'; }
-                    var k = wa(C, key);
-                    var note = null;
-                    if (k && k.note === 'string') {
-                      note = 'Key is a passphrase string. If no IV is given, CryptoJS derives the real key+IV (EVP_BytesToKey/MD5) from this passphrase and the salt stored in the ciphertext.';
-                    }
-                    send({
-                      src: 'CryptoJS',
-                      op: op,
-                      alg: name,
-                      key: k,
-                      iv: wa(C, cfg && cfg.iv),
-                      note: note,
-                      out: preview(out)
-                    });
-                  } catch (e) {}
-                  return r;
-                };
-              });
-            }
-
-            function hookCJS(C) {
-              if (!C || !C.enc) return;
-              CJS_NAMES.forEach(function (n) { if (C[n]) hookCipher(C, n, C[n]); });
-            }
-
-            // 1) Library exposed as window.CryptoJS
-            var _cj = window.CryptoJS;
-            try {
-              Object.defineProperty(window, 'CryptoJS', {
-                configurable: true,
-                enumerable: true,
-                get: function () { return _cj; },
-                set: function (v) { _cj = v; try { hookCJS(v); } catch (e) {} }
-              });
-            } catch (e) {}
-            if (_cj) { try { hookCJS(_cj); } catch (e) {} }
-            setInterval(function () { try { hookCJS(window.CryptoJS); } catch (e) {} }, 500);
-
-            // 2) Library BUNDLED (webpack/vite) and not on window: crypto-js runs
-            //    `C.AES = ...` on a plain object. An accessor on Object.prototype makes
-            //    that assignment call us, so we get the object and can wrap it.
-            CJS_NAMES.forEach(function (name) {
-              try {
-                Object.defineProperty(Object.prototype, name, {
-                  configurable: true,
-                  enumerable: false,
-                  get: function () { return undefined; },
-                  set: function (v) {
-                    try {
-                      Object.defineProperty(this, name, {
-                        value: v, writable: true, configurable: true, enumerable: true
-                      });
-                    } catch (e) {}
-                    try { if (this && this.enc && v) hookCipher(this, name, v); } catch (e) {}
-                  }
-                });
-              } catch (e) {}
-            });
-
-            /* ---------------- Base64 image URLs (atob) ---------------- */
-            var seen = {};
-            window.atob = function (s) {
-              var r = _atob(s);
-              try {
-                if (/^https?:\/\//i.test(r) && !seen[r]) {
-                  seen[r] = 1;
-                  send({ src: 'atob', op: 'base64 decode', alg: 'base64', out: preview(r) });
+              // drop wrappers that contain other candidates / inner junk inside link cards
+              return out.filter(function (a) {
+                for (var j = 0; j < out.length; j++) {
+                  var b = out[j];
+                  if (a === b) continue;
+                  if (a.contains(b) && !a.matches(STRONG)) return false;
+                  if (b.contains(a) && b.tagName === 'A' && !/^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return false;
                 }
-              } catch (e) {}
-              return r;
+                return true;
+              });
+            }
+
+            function score(c, r, d) {
+              var cx = c.left + c.width / 2, cy = c.top + c.height / 2;
+              var rx = r.left + r.width / 2, ry = r.top + r.height / 2;
+              var p, s;
+              if (d === 'left' || d === 'right') {
+                var ov = Math.min(c.bottom, r.bottom) - Math.max(c.top, r.top);
+                if (ov < Math.min(c.height, r.height) * 0.3) return -1; // stay in the same row
+                if (d === 'right') { if (rx <= cx + 2 || r.left < c.left + 2) return -1; p = Math.max(0, r.left - c.right); }
+                else { if (rx >= cx - 2 || r.right > c.right - 2) return -1; p = Math.max(0, c.left - r.right); }
+                s = Math.abs(ry - cy);
+                return 1 + p + s * 3;
+              }
+              if (d === 'down') { if (ry <= cy + 2 || r.top < c.top + 2) return -1; p = Math.max(0, r.top - c.bottom); }
+              else { if (ry >= cy - 2 || r.bottom > c.bottom - 2) return -1; p = Math.max(0, c.top - r.bottom); }
+              s = Math.abs(rx - cx);
+              return 1 + p + s * 2;
+            }
+
+            function fire(el, types) {
+              types.forEach(function (t) {
+                try { el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+              });
+            }
+
+            function setCur(el, d) {
+              if (cur && cur !== el) {
+                cur.classList.remove('__tvf');
+                fire(cur, ['mouseout', 'mouseleave']);
+              }
+              cur = el;
+              el.classList.add('__tvf');
+              fire(el, ['pointerover', 'mouseover', 'mouseenter', 'mousemove']);
+              try { el.focus({ preventScroll: true }); } catch (e) {}
+              var vert = (d === 'up' || d === 'down');
+              try {
+                el.scrollIntoView({ block: vert ? 'center' : 'nearest', inline: vert ? 'nearest' : 'center', behavior: 'auto' });
+              } catch (e) { el.scrollIntoView(); }
+            }
+
+            function firstInView(list) {
+              var best = null, bs = 1e9;
+              list.forEach(function (el) {
+                var r = el.getBoundingClientRect();
+                if (r.bottom < 0 || r.top > vh() || r.right < 0 || r.left > vw()) return;
+                var s = r.top * 2 + r.left;
+                if (s < bs) { bs = s; best = el; }
+              });
+              return best || list[0] || null;
+            }
+
+            function scrollFor(d) {
+              var ax = (d === 'left' || d === 'right');
+              var sign = (d === 'right' || d === 'down') ? 1 : -1;
+              var el = cur;
+              while (el && el !== document.body && el !== document.documentElement) {
+                var cs = getComputedStyle(el);
+                if (ax) {
+                  if (el.scrollWidth > el.clientWidth + 4 && /(auto|scroll)/.test(cs.overflowX)) {
+                    var b = el.scrollLeft; el.scrollLeft += sign * el.clientWidth * 0.6;
+                    if (el.scrollLeft !== b) return true;
+                  }
+                } else {
+                  if (el.scrollHeight > el.clientHeight + 4 && /(auto|scroll)/.test(cs.overflowY)) {
+                    var b2 = el.scrollTop; el.scrollTop += sign * el.clientHeight * 0.6;
+                    if (el.scrollTop !== b2) return true;
+                  }
+                }
+                el = el.parentElement;
+              }
+              var bx = window.scrollX, by = window.scrollY;
+              window.scrollBy(ax ? sign * vw() * 0.5 : 0, ax ? 0 : sign * vh() * 0.6);
+              return window.scrollX !== bx || window.scrollY !== by;
+            }
+
+            function move(d, retried) {
+              var list = cands();
+              if (!list.length) { scrollFor(d); return; }
+              if (!cur || !document.contains(cur)) { setCur(firstInView(list), d); return; }
+              var c = cur.getBoundingClientRect(), best = null, bs = 1e12;
+              list.forEach(function (el) {
+                if (el === cur) return;
+                var s = score(c, el.getBoundingClientRect(), d);
+                if (s >= 0 && s < bs) { bs = s; best = el; }
+              });
+              if (best) { setCur(best, d); return; }
+              if (!retried && scrollFor(d)) {
+                setTimeout(function () { move(d, true); }, 320); // lazy rows / carousels render after scroll
+              }
+            }
+
+            function ok() {
+              if (!cur || !document.contains(cur)) return;
+              if (EDIT.test(cur.tagName) && cur.tagName !== 'SELECT') { cur.focus(); return; }
+              fire(cur, ['pointerdown', 'mousedown', 'pointerup', 'mouseup']);
+              cur.click();
+            }
+
+            window.__tvnav = function (c) { if (c === 'ok') ok(); else move(c, false); };
+
+            // wake up player controls + control the biggest <video>
+            window.__tvVid = function (c) {
+              var vs = [].slice.call(document.querySelectorAll('video'));
+              if (!vs.length) return;
+              vs.sort(function (a, b) { return (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight); });
+              var v = vs[0];
+              fire(v, ['mousemove']);
+              if (document.body) fire(document.body, ['mousemove']);
+              var dur = isFinite(v.duration) ? v.duration : 1e9;
+              if (c === 'left') v.currentTime = Math.max(0, v.currentTime - 10);
+              else if (c === 'right') v.currentTime = Math.min(dur, v.currentTime + 10);
+              else if (c === 'up') v.volume = Math.min(1, v.volume + 0.1);
+              else if (c === 'down') v.volume = Math.max(0, v.volume - 0.1);
+              else if (c === 'ok' || c === 'toggle') { if (v.paused) v.play(); else v.pause(); }
             };
 
-            /* ---------------- Blob images created after decrypting ---------------- */
-            if (window.URL && URL.createObjectURL) {
-              var oCOU = URL.createObjectURL;
-              var blobCount = 0;
-              URL.createObjectURL = function (obj) {
-                var u = oCOU.apply(this, arguments);
-                try {
-                  if (blobCount++ < 30) {
-                    send({
-                      src: 'blob', op: 'createObjectURL', alg: '',
-                      out: ((obj && obj.type) || 'blob') + ' ' + ((obj && obj.size) || 0) + ' bytes -> ' + u
-                    });
-                  }
-                } catch (e) {}
-                return u;
-              };
-            }
+            // real remote / keyboard keys reaching the page
+            window.addEventListener('keydown', function (e) {
+              var map = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+              var t = e.target;
+              var ed = t && (t.isContentEditable || EDIT.test(t.tagName));
+              if (map[e.key]) {
+                if (ed && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+                e.preventDefault(); e.stopPropagation();
+                move(map[e.key], false);
+              } else if (e.key === 'Enter' && cur && !ed) {
+                e.preventDefault(); e.stopPropagation();
+                ok();
+              }
+            }, true);
+
+            // touching the screen hides the TV focus ring
+            window.addEventListener('touchstart', function () {
+              if (cur) { cur.classList.remove('__tvf'); cur = null; }
+            }, { passive: true });
           })();
-          KS_EOF
-          cat > app/src/main/java/com/example/keysniffer/MainActivity.java <<'KS_EOF'
-          package com.example.keysniffer;
+          JSEOF
+
+          # ---------- MainActivity.java ----------
+          cat > app/src/main/java/$PKG_PATH/MainActivity.java <<'EOF'
+          package __PKG__;
 
           import android.app.Activity;
-          import android.content.ClipData;
-          import android.content.ClipboardManager;
+          import android.app.UiModeManager;
           import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.ActivityInfo;
+          import android.content.res.Configuration;
           import android.graphics.Bitmap;
           import android.graphics.Color;
-          import android.graphics.Typeface;
+          import android.graphics.drawable.ColorDrawable;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Build;
           import android.os.Bundle;
-          import android.util.TypedValue;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.Log;
+          import android.view.DisplayCutout;
           import android.view.Gravity;
           import android.view.KeyEvent;
-          import android.view.inputmethod.EditorInfo;
-          import android.view.inputmethod.InputMethodManager;
-          import android.webkit.JavascriptInterface;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowInsets;
+          import android.view.WindowManager;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.widget.Button;
-          import android.widget.EditText;
+          import android.widget.FrameLayout;
           import android.widget.LinearLayout;
-          import android.widget.ScrollView;
           import android.widget.TextView;
-          import android.widget.Toast;
 
-          import androidx.webkit.WebViewCompat;
-          import androidx.webkit.WebViewFeature;
-
+          import org.json.JSONArray;
           import org.json.JSONObject;
 
+          import java.io.BufferedReader;
+          import java.io.ByteArrayInputStream;
           import java.io.ByteArrayOutputStream;
           import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
           import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.HashSet;
+          import java.util.Locale;
+          import java.util.Set;
 
           public class MainActivity extends Activity {
 
+              // Injected by the GitHub workflow
+              private static final String BASE_URL  = "__BASE_URL__";
+              private static final String BLOCK_API = "__BLOCK_API__";
+              private static final boolean SHOW_REMOTE_ON_PHONE = "__SHOW_REMOTE__".equals("true");
+              private static final String TAG = "WebApp";
+
+              private static final String DESKTOP_UA =
+                      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      + "Chrome/124.0.0.0 Safari/537.36";
+
+              // Layout width (px) forced on every device. Bigger = more content, smaller text.
+              private static final int DESKTOP_WIDTH = 1024;
+
+              private static final String VIEWPORT_JS =
+                      "(function(){if(window.__dw)return;window.__dw=1;"
+                      + "var C='width=" + DESKTOP_WIDTH + ", user-scalable=yes';"
+                      + "function a(){var h=document.head||document.documentElement;if(!h)return;"
+                      + "var m=document.querySelector('meta[name=viewport]');"
+                      + "if(!m){m=document.createElement('meta');m.name='viewport';h.appendChild(m);}"
+                      + "if(m.getAttribute('content')!==C)m.setAttribute('content',C);}"
+                      + "a();new MutationObserver(a).observe(document.documentElement,"
+                      + "{childList:true,subtree:true,attributes:true,attributeFilter:['content']});})();";
+
+              private FrameLayout frame;
+              private FrameLayout content;
+              private FrameLayout fullscreenContainer;
               private WebView web;
-              private EditText urlBox;
-              private TextView log;
-              private ScrollView scroll;
-              private String hookJs = "";
-              private boolean docStartInjected = false;
+              private SharedPreferences prefs;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private View customView;
+              private WebChromeClient.CustomViewCallback customCallback;
+              private int padL, padT, padR, padB;
+
+              private String navJs = "";
+              private LinearLayout remotePanel;
+              private TextView remoteHeader;
+              private Runnable repeater;
+
+              private final Set<String> blockDomains = Collections.synchronizedSet(new HashSet<String>());
+              private final Set<String> blockUrls = Collections.synchronizedSet(new HashSet<String>());
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  hookJs = readAsset("hook.js");
-                  buildUi();
-                  setupWebView();
-                  go("https://example.com");
-              }
+                  prefs = getSharedPreferences("blocklist", MODE_PRIVATE);
+                  navJs = readAsset("nav.js");
 
-              /* ---------------------------- UI ---------------------------- */
+                  Window w = getWindow();
+                  w.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+                  w.setStatusBarColor(Color.BLACK);
+                  w.setNavigationBarColor(Color.BLACK);
+                  if (Build.VERSION.SDK_INT >= 28) {
+                      WindowManager.LayoutParams lp = w.getAttributes();
+                      lp.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30
+                              ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                              : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      w.setAttributes(lp);
+                  }
 
-              private int dp(int v) {
-                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
-                          getResources().getDisplayMetrics());
-              }
+                  frame = new FrameLayout(this);
+                  frame.setBackgroundColor(Color.BLACK);
 
-              private void buildUi() {
-                  LinearLayout root = new LinearLayout(this);
-                  root.setOrientation(LinearLayout.VERTICAL);
-
-                  // URL bar
-                  LinearLayout bar = new LinearLayout(this);
-                  bar.setOrientation(LinearLayout.HORIZONTAL);
-                  bar.setGravity(Gravity.CENTER_VERTICAL);
-                  bar.setPadding(dp(6), dp(30), dp(6), dp(4));
-
-                  urlBox = new EditText(this);
-                  urlBox.setSingleLine(true);
-                  urlBox.setHint("Enter URL or search");
-                  urlBox.setTextSize(14);
-                  urlBox.setImeOptions(EditorInfo.IME_ACTION_GO);
-                  urlBox.setOnEditorActionListener((v, actionId, event) -> {
-                      if (actionId == EditorInfo.IME_ACTION_GO
-                              || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                          go(urlBox.getText().toString());
-                          return true;
-                      }
-                      return false;
-                  });
-                  bar.addView(urlBox, new LinearLayout.LayoutParams(0,
-                          LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-                  Button goBtn = new Button(this);
-                  goBtn.setText("Go");
-                  goBtn.setOnClickListener(v -> go(urlBox.getText().toString()));
-                  bar.addView(goBtn);
-                  root.addView(bar);
-
-                  // WebView
+                  content = new FrameLayout(this);
                   web = new WebView(this);
-                  root.addView(web, new LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+                  web.setFocusable(true);
+                  web.setFocusableInTouchMode(true);
+                  content.addView(web, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-                  // Buttons for the log
-                  LinearLayout btns = new LinearLayout(this);
-                  btns.setOrientation(LinearLayout.HORIZONTAL);
-                  Button copy = new Button(this);
-                  copy.setText("Copy log");
-                  copy.setOnClickListener(v -> {
-                      ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                      cm.setPrimaryClip(ClipData.newPlainText("keys", log.getText()));
-                      Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+                  fullscreenContainer = new FrameLayout(this);
+                  fullscreenContainer.setBackgroundColor(Color.BLACK);
+                  fullscreenContainer.setVisibility(View.GONE);
+
+                  frame.addView(content, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                  frame.addView(fullscreenContainer, new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+                  // on-screen test remote (phones only, always on top)
+                  if (SHOW_REMOTE_ON_PHONE && !isTv()) {
+                      frame.addView(buildRemote());
+                  }
+                  setContentView(frame);
+
+                  applyNormalSystemUi();
+
+                  frame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                      @Override
+                      public WindowInsets onApplyWindowInsets(View v, WindowInsets in) {
+                          int l = in.getSystemWindowInsetLeft();
+                          int t = in.getSystemWindowInsetTop();
+                          int r = in.getSystemWindowInsetRight();
+                          int b = in.getSystemWindowInsetBottom();
+                          if (Build.VERSION.SDK_INT >= 28) {
+                              DisplayCutout dc = in.getDisplayCutout();
+                              if (dc != null) {
+                                  l = Math.max(l, dc.getSafeInsetLeft());
+                                  t = Math.max(t, dc.getSafeInsetTop());
+                                  r = Math.max(r, dc.getSafeInsetRight());
+                                  b = Math.max(b, dc.getSafeInsetBottom());
+                              }
+                          }
+                          padL = l; padT = t; padR = r; padB = b;
+                          if (customView == null) content.setPadding(l, t, r, b);
+                          return in;
+                      }
                   });
-                  Button clear = new Button(this);
-                  clear.setText("Clear");
-                  clear.setOnClickListener(v -> log.setText(""));
-                  btns.addView(copy, new LinearLayout.LayoutParams(0,
-                          LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-                  btns.addView(clear, new LinearLayout.LayoutParams(0,
-                          LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-                  root.addView(btns);
-
-                  // Log panel
-                  scroll = new ScrollView(this);
-                  scroll.setBackgroundColor(Color.parseColor("#111111"));
-                  log = new TextView(this);
-                  log.setTextColor(Color.parseColor("#7CFC9A"));
-                  log.setTypeface(Typeface.MONOSPACE);
-                  log.setTextSize(11);
-                  log.setPadding(dp(8), dp(8), dp(8), dp(8));
-                  log.setTextIsSelectable(true);
-                  log.setText("Waiting for the page to decrypt something…\n");
-                  scroll.addView(log);
-                  root.addView(scroll, new LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT, dp(230)));
-
-                  setContentView(root);
-              }
-
-              /* -------------------------- WebView -------------------------- */
-
-              private void setupWebView() {
-                  WebView.setWebContentsDebuggingEnabled(true);
+                  frame.requestApplyInsets();
 
                   WebSettings s = web.getSettings();
                   s.setJavaScriptEnabled(true);
                   s.setDomStorageEnabled(true);
+                  s.setDatabaseEnabled(true);
                   s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+
+                  s.setUserAgentString(DESKTOP_UA);
                   s.setUseWideViewPort(true);
                   s.setLoadWithOverviewMode(true);
+                  s.setSupportZoom(true);
+                  s.setBuiltInZoomControls(true);
+                  s.setDisplayZoomControls(false);
+                  s.setTextZoom(100);
 
-                  web.addJavascriptInterface(new Bridge(), "KH");
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onShowCustomView(View view, CustomViewCallback callback) {
+                          if (customView != null) {
+                              callback.onCustomViewHidden();
+                              return;
+                          }
+                          customView = view;
+                          customCallback = callback;
+                          fullscreenContainer.addView(view, new FrameLayout.LayoutParams(
+                                  FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+                          fullscreenContainer.setVisibility(View.VISIBLE);
+                          content.setVisibility(View.INVISIBLE);
+                          getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                          setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                          applyFullscreenSystemUi();
+                      }
 
-                  if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                      WebViewCompat.addDocumentStartJavaScript(web, hookJs, Collections.singleton("*"));
-                      docStartInjected = true;
-                  }
+                      @Override
+                      public void onHideCustomView() {
+                          exitCustomView();
+                      }
+
+                      @Override
+                      public Bitmap getDefaultVideoPoster() {
+                          return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+                      }
+                  });
 
                   web.setWebViewClient(new WebViewClient() {
-                      @Override
-                      public void onPageFinished(WebView view, String url) {
-                          // Diagnostic: is the hook present, and is the bridge visible to the page?
-                          view.evaluateJavascript(
-                                  "(window.__kh ? 'HOOK_OK' : 'HOOK_MISSING') + ' bridge=' + (typeof KH)",
-                                  value -> {
-                                      String v = value == null ? "" : value.replace("\"", "");
-                                      append("[page loaded] " + v + "  docStart=" + docStartInjected);
-                                      if (v.startsWith("HOOK_MISSING")) {
-                                          view.evaluateJavascript(hookJs, null); // late injection
-                                      }
-                                  });
+                      private void inject(WebView view) {
+                          view.evaluateJavascript(VIEWPORT_JS, null);
+                          if (navJs.length() > 0) view.evaluateJavascript(navJs, null);
                       }
 
                       @Override
                       public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                          if (!docStartInjected) {
-                              view.evaluateJavascript(hookJs, null); // fallback, may run late
+                          super.onPageStarted(view, url, favicon);
+                          inject(view);
+                      }
+
+                      @Override
+                      public void onPageCommitVisible(WebView view, String url) {
+                          super.onPageCommitVisible(view, url);
+                          inject(view);
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          super.onPageFinished(view, url);
+                          inject(view);
+                      }
+
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          String url = request.getUrl().toString();
+                          if (isBlocked(url)) {
+                              Log.d(TAG, "BLOCKED: " + url);
+                              return new WebResourceResponse("text/plain", "UTF-8", 403, "Blocked",
+                                      new HashMap<String, String>(), new ByteArrayInputStream(new byte[0]));
                           }
-                          urlBox.setText(url);
+                          return super.shouldInterceptRequest(view, request);
+                      }
+
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          String url = request.getUrl().toString();
+                          if (isBlocked(url)) {
+                              Log.d(TAG, "BLOCKED NAV: " + url);
+                              return true;
+                          }
+                          String scheme = request.getUrl().getScheme();
+                          if ("http".equals(scheme) || "https".equals(scheme)) {
+                              return false;
+                          }
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, request.getUrl()));
+                          } catch (Exception ignored) { }
+                          return true;
                       }
                   });
+
+                  String cached = prefs.getString("json", null);
+                  final boolean hadCache = cached != null && parse(cached);
+                  if (hadCache) web.loadUrl(BASE_URL);
+
+                  new Thread(new Runnable() {
+                      @Override
+                      public void run() {
+                          String json = download(BLOCK_API);
+                          if (json != null && parse(json)) {
+                              prefs.edit().putString("json", json).apply();
+                          }
+                          if (!hadCache) {
+                              runOnUiThread(new Runnable() {
+                                  @Override public void run() { web.loadUrl(BASE_URL); }
+                              });
+                          }
+                      }
+                  }).start();
+
+                  web.requestFocus();
               }
 
-              private void go(String input) {
-                  String u = input == null ? "" : input.trim();
-                  if (u.isEmpty()) return;
-                  if (!u.matches("^[a-zA-Z][a-zA-Z0-9+.-]*://.*")) {
-                      if (u.contains(" ") || !u.contains(".")) {
-                          u = "https://www.google.com/search?q=" + android.net.Uri.encode(u);
-                      } else {
-                          u = "https://" + u;
+              // ---------------- remote control ----------------
+
+              private boolean isTv() {
+                  UiModeManager um = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+                  return um != null && um.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION;
+              }
+
+              private int dp(int v) {
+                  return Math.round(v * getResources().getDisplayMetrics().density);
+              }
+
+              // Single entry point for on-screen remote + real keys while a video is fullscreen
+              private void press(String cmd) {
+                  if ("back".equals(cmd)) { onBackPressed(); return; }
+                  if (customView != null) {
+                      web.evaluateJavascript("window.__tvVid&&window.__tvVid('" + cmd + "')", null);
+                  } else {
+                      web.evaluateJavascript("window.__tvnav&&window.__tvnav('" + cmd + "')", null);
+                  }
+              }
+
+              @Override
+              public boolean dispatchKeyEvent(KeyEvent e) {
+                  // While a video is fullscreen the WebView is hidden and gets no keys,
+                  // so we map the remote straight to the player.
+                  if (customView != null) {
+                      String cmd = null;
+                      switch (e.getKeyCode()) {
+                          case KeyEvent.KEYCODE_DPAD_LEFT:  cmd = "left"; break;
+                          case KeyEvent.KEYCODE_DPAD_RIGHT: cmd = "right"; break;
+                          case KeyEvent.KEYCODE_DPAD_UP:    cmd = "up"; break;
+                          case KeyEvent.KEYCODE_DPAD_DOWN:  cmd = "down"; break;
+                          case KeyEvent.KEYCODE_DPAD_CENTER:
+                          case KeyEvent.KEYCODE_ENTER:
+                          case KeyEvent.KEYCODE_NUMPAD_ENTER: cmd = "ok"; break;
+                          case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                          case KeyEvent.KEYCODE_MEDIA_PLAY:
+                          case KeyEvent.KEYCODE_MEDIA_PAUSE: cmd = "toggle"; break;
+                          case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: cmd = "right"; break;
+                          case KeyEvent.KEYCODE_MEDIA_REWIND: cmd = "left"; break;
+                          default: break;
+                      }
+                      if (cmd != null) {
+                          if (e.getAction() == KeyEvent.ACTION_DOWN) press(cmd);
+                          return true;
                       }
                   }
-                  web.loadUrl(u);
-                  InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                  if (imm != null) imm.hideSoftInputFromWindow(urlBox.getWindowToken(), 0);
+                  return super.dispatchKeyEvent(e);
+              }
+
+              private Button remoteButton(String label, final String cmd, final boolean repeat, int w) {
+                  Button b = new Button(this);
+                  b.setText(label);
+                  b.setAllCaps(false);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(16);
+                  b.setPadding(0, 0, 0, 0);
+                  b.setMinWidth(0);
+                  b.setMinHeight(0);
+                  b.setMinimumWidth(0);
+                  b.setMinimumHeight(0);
+                  b.setFocusable(false);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(Color.argb(210, 40, 40, 48));
+                  bg.setCornerRadius(dp(10));
+                  bg.setStroke(dp(1), Color.argb(160, 255, 255, 255));
+                  b.setBackground(bg);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(46));
+                  lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+                  b.setLayoutParams(lp);
+                  b.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(final View v, MotionEvent ev) {
+                          switch (ev.getActionMasked()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  v.setAlpha(0.5f);
+                                  press(cmd);
+                                  if (repeat) {
+                                      stopRepeat();
+                                      repeater = new Runnable() {
+                                          @Override public void run() {
+                                              press(cmd);
+                                              handler.postDelayed(this, 140);
+                                          }
+                                      };
+                                      handler.postDelayed(repeater, 400);
+                                  }
+                                  return true;
+                              case MotionEvent.ACTION_UP:
+                              case MotionEvent.ACTION_CANCEL:
+                                  v.setAlpha(1f);
+                                  stopRepeat();
+                                  return true;
+                          }
+                          return true;
+                      }
+                  });
+                  return b;
+              }
+
+              private void stopRepeat() {
+                  if (repeater != null) handler.removeCallbacks(repeater);
+                  repeater = null;
+              }
+
+              private LinearLayout row() {
+                  LinearLayout r = new LinearLayout(this);
+                  r.setOrientation(LinearLayout.HORIZONTAL);
+                  r.setGravity(Gravity.CENTER);
+                  return r;
+              }
+
+              private View buildRemote() {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setGravity(Gravity.CENTER_HORIZONTAL);
+
+                  remoteHeader = new TextView(this);
+                  remoteHeader.setTextColor(Color.WHITE);
+                  remoteHeader.setTextSize(12);
+                  remoteHeader.setGravity(Gravity.CENTER);
+                  remoteHeader.setPadding(dp(14), dp(4), dp(14), dp(4));
+                  GradientDrawable hbg = new GradientDrawable();
+                  hbg.setColor(Color.argb(210, 20, 90, 200));
+                  hbg.setCornerRadius(dp(14));
+                  remoteHeader.setBackground(hbg);
+
+                  remotePanel = new LinearLayout(this);
+                  remotePanel.setOrientation(LinearLayout.VERTICAL);
+                  remotePanel.setGravity(Gravity.CENTER_HORIZONTAL);
+                  GradientDrawable pbg = new GradientDrawable();
+                  pbg.setColor(Color.argb(120, 0, 0, 0));
+                  pbg.setCornerRadius(dp(14));
+                  remotePanel.setBackground(pbg);
+                  remotePanel.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+                  LinearLayout r1 = row();
+                  r1.addView(remoteButton("\u25B2", "up", true, 46));
+                  LinearLayout r2 = row();
+                  r2.addView(remoteButton("\u25C0", "left", true, 46));
+                  r2.addView(remoteButton("OK", "ok", false, 46));
+                  r2.addView(remoteButton("\u25B6", "right", true, 46));
+                  LinearLayout r3 = row();
+                  r3.addView(remoteButton("\u25BC", "down", true, 46));
+                  LinearLayout r4 = row();
+                  r4.addView(remoteButton("\u21A9 Back", "back", false, 100));
+                  remotePanel.addView(r1);
+                  remotePanel.addView(r2);
+                  remotePanel.addView(r3);
+                  remotePanel.addView(r4);
+
+                  box.addView(remoteHeader);
+                  box.addView(remotePanel);
+                  box.setAlpha(0.92f);
+
+                  boolean open = prefs.getBoolean("remote_open", true);
+                  setRemoteOpen(open);
+                  remoteHeader.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) {
+                          boolean now = remotePanel.getVisibility() != View.VISIBLE;
+                          setRemoteOpen(now);
+                          prefs.edit().putBoolean("remote_open", now).apply();
+                      }
+                  });
+
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+                  lp.gravity = Gravity.BOTTOM | Gravity.END;
+                  lp.setMargins(0, 0, dp(28), dp(28));
+                  box.setLayoutParams(lp);
+                  return box;
+              }
+
+              private void setRemoteOpen(boolean open) {
+                  remotePanel.setVisibility(open ? View.VISIBLE : View.GONE);
+                  remoteHeader.setText(open ? "Remote  \u25BE" : "Remote  \u25B4");
+              }
+
+              private String readAsset(String name) {
+                  try {
+                      InputStream in = getAssets().open(name);
+                      ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                      byte[] buf = new byte[4096];
+                      int n;
+                      while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                      in.close();
+                      return bo.toString("UTF-8");
+                  } catch (Exception e) {
+                      Log.e(TAG, "asset error", e);
+                      return "";
+                  }
+              }
+
+              // ---------------- system UI helpers ----------------
+
+              private void applyNormalSystemUi() {
+                  getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+              }
+
+              private void applyFullscreenSystemUi() {
+                  getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+              }
+
+              private void exitCustomView() {
+                  if (customView == null) return;
+                  fullscreenContainer.removeView(customView);
+                  fullscreenContainer.setVisibility(View.GONE);
+                  content.setVisibility(View.VISIBLE);
+                  customView = null;
+                  WebChromeClient.CustomViewCallback cb = customCallback;
+                  customCallback = null;
+                  if (cb != null) cb.onCustomViewHidden();
+                  getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                  applyNormalSystemUi();
+                  content.setPadding(padL, padT, padR, padB);
+                  frame.requestApplyInsets();
+                  web.requestFocus();
+              }
+
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) {
+                      if (customView != null) applyFullscreenSystemUi();
+                      else applyNormalSystemUi();
+                  }
+              }
+
+              // ---------------- block list ----------------
+
+              private boolean parse(String json) {
+                  try {
+                      JSONObject o = new JSONObject(json);
+                      Set<String> d = new HashSet<String>();
+                      Set<String> u = new HashSet<String>();
+                      JSONArray da = o.optJSONArray("blockDomains");
+                      JSONArray ua = o.optJSONArray("blockUrls");
+                      if (da != null) for (int i = 0; i < da.length(); i++)
+                          d.add(da.getString(i).trim().toLowerCase(Locale.ROOT));
+                      if (ua != null) for (int i = 0; i < ua.length(); i++)
+                          u.add(endpointKey(ua.getString(i).trim()));
+                      blockDomains.clear(); blockDomains.addAll(d);
+                      blockUrls.clear();    blockUrls.addAll(u);
+                      Log.d(TAG, "Block list loaded: " + d.size() + " domains, " + u.size() + " urls");
+                      return true;
+                  } catch (Exception e) {
+                      Log.e(TAG, "parse error", e);
+                      return false;
+                  }
+              }
+
+              private static String stripSlash(String s) {
+                  while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+                  return s;
+              }
+
+              private boolean isBlocked(String url) {
+                  try {
+                      String host = Uri.parse(url).getHost();
+                      if (host != null && blockDomains.contains(host.toLowerCase(Locale.ROOT))) {
+                          return true;
+                      }
+                      if (blockUrls.contains(endpointKey(url))) {
+                          return true;
+                      }
+                  } catch (Exception ignored) { }
+                  return false;
+              }
+
+              private static String endpointKey(String url) {
+                  Uri u = Uri.parse(url);
+                  String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
+                  String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
+                  return host + stripSlash(path);
+              }
+
+              private String download(String link) {
+                  HttpURLConnection c = null;
+                  try {
+                      c = (HttpURLConnection) new URL(link).openConnection();
+                      c.setConnectTimeout(5000);
+                      c.setReadTimeout(5000);
+                      if (c.getResponseCode() != 200) return null;
+                      BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
+                      StringBuilder sb = new StringBuilder();
+                      String line;
+                      while ((line = r.readLine()) != null) sb.append(line).append('\n');
+                      r.close();
+                      return sb.toString();
+                  } catch (Exception e) {
+                      Log.e(TAG, "download error", e);
+                      return null;
+                  } finally {
+                      if (c != null) c.disconnect();
+                  }
               }
 
               @Override
               public void onBackPressed() {
-                  if (web.canGoBack()) web.goBack();
-                  else super.onBackPressed();
-              }
-
-              /* ----------------------- JS -> native ----------------------- */
-
-              private class Bridge {
-                  @JavascriptInterface
-                  public void report(final String json) {
-                      runOnUiThread(() -> append(format(json)));
+                  if (customView != null) {
+                      exitCustomView();
+                  } else if (web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
                   }
               }
 
-              private void append(String text) {
-                  log.append(text + "\n");
-                  scroll.post(() -> scroll.fullScroll(ScrollView.FOCUS_DOWN));
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  web.onPause();
               }
 
-              private String format(String json) {
-                  try {
-                      JSONObject o = new JSONObject(json);
-                      StringBuilder sb = new StringBuilder();
-                      sb.append("▶ ").append(o.optString("src")).append("  ")
-                              .append(o.optString("alg")).append("  ")
-                              .append(o.optString("op")).append('\n');
-                      field(sb, "KEY", o.optJSONObject("key"));
-                      field(sb, "IV ", o.optJSONObject("iv"));
-                      field(sb, "AAD", o.optJSONObject("aad"));
-                      String note = o.optString("note", "");
-                      if (!note.isEmpty() && !"null".equals(note)) sb.append("NOTE: ").append(note).append('\n');
-                      String out = o.optString("out", "");
-                      if (!out.isEmpty() && !"null".equals(out)) sb.append("OUT: ").append(out).append('\n');
-                      sb.append("────────────────────");
-                      return sb.toString();
-                  } catch (Exception e) {
-                      return "(unparsed) " + json;
-                  }
-              }
-
-              private void field(StringBuilder sb, String label, JSONObject f) {
-                  if (f == null) return;
-                  String len = f.has("len") ? " (" + f.optInt("len") + " bytes)" : "";
-                  sb.append(label).append(len).append('\n');
-                  String hex = f.optString("hex", "");
-                  String b64 = f.optString("b64", "");
-                  String txt = f.optString("utf8", "");
-                  if (!hex.isEmpty()) sb.append("  hex : ").append(hex).append('\n');
-                  if (!b64.isEmpty()) sb.append("  b64 : ").append(b64).append('\n');
-                  if (!txt.isEmpty() && !"null".equals(txt)) sb.append("  text: ").append(txt).append('\n');
-              }
-
-              private String readAsset(String name) {
-                  try (InputStream in = getAssets().open(name)) {
-                      ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                      byte[] buf = new byte[8192];
-                      int n;
-                      while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
-                      return bos.toString("UTF-8");
-                  } catch (Exception e) {
-                      return "";
-                  }
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
               }
           }
-          KS_EOF
+          EOF
+
+          # ---------- inject values ----------
+          export PKG="$PACKAGE_NAME"
+          for f in app/build.gradle app/src/main/AndroidManifest.xml app/src/main/java/$PKG_PATH/MainActivity.java; do
+            perl -pi -e 's/__PKG__/$ENV{PKG}/g; s/__BASE_URL__/$ENV{BASE_URL}/g; s/__BLOCK_API__/$ENV{BLOCK_API}/g; s/__APP_NAME__/$ENV{APP_NAME}/g; s/__ICON_REF__/$ENV{ICON_REF}/g; s/__SHOW_REMOTE__/$ENV{SHOW_REMOTE}/g' "$f"
+          done
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        working-directory: webapp
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p out
+          cp webapp/app/build/outputs/apk/debug/app-debug.apk "out/webapp.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: KeySniffer-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: web-apk
+          path: out/webapp.apk
           if-no-files-found: error
