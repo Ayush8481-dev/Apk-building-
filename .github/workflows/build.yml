@@ -169,7 +169,9 @@ jobs:
 
             function describe(u) {
               if (!u) return null;
-              return { len: u.length, hex: hex(u), b64: b64(u), utf8: utf8(u) };
+              var t = utf8(u);
+              if (t !== null && !/^[\x20-\x7e]*$/.test(t)) t = null; // only show readable text
+              return { len: u.length, hex: hex(u), b64: b64(u), utf8: t };
             }
 
             function preview(s) {
@@ -177,6 +179,11 @@ jobs:
               s = String(s);
               return s.length > 400 ? s.slice(0, 400) + '…(' + s.length + ' chars)' : s;
             }
+
+            // Heartbeat: proves the script ran in this frame and the native bridge works.
+            var where = '';
+            try { where = (window.top === window ? 'top ' : 'frame ') + location.href; } catch (e) { where = 'frame'; }
+            send({ src: 'hook', op: 'active', alg: '', out: preview(where) });
 
             /* ---------------- WebCrypto (crypto.subtle) ---------------- */
             if (window.SubtleCrypto && SubtleCrypto.prototype) {
@@ -250,7 +257,7 @@ jobs:
               });
             }
 
-            /* ---------------- CryptoJS (window.CryptoJS) ---------------- */
+            /* ---------------- CryptoJS (global OR bundled) ---------------- */
             function wa(C, x) {
               if (x == null) return null;
               if (typeof x === 'string') return { len: x.length, utf8: x, note: 'string' };
@@ -258,48 +265,56 @@ jobs:
                 var o = { len: x.sigBytes };
                 try { o.hex = x.toString(C.enc.Hex); } catch (e) {}
                 try { o.b64 = x.toString(C.enc.Base64); } catch (e) {}
-                try { o.utf8 = x.toString(C.enc.Utf8); } catch (e) {}
+                try {
+                  var t = x.toString(C.enc.Utf8);
+                  if (/^[\x20-\x7e]*$/.test(t)) o.utf8 = t; // only show readable text
+                } catch (e) {}
                 return o;
               }
               return null;
             }
 
-            function hookCJS(C) {
-              if (!C || C.__kh || !C.enc || !C.AES) return;
-              C.__kh = true;
-              ['AES', 'DES', 'TripleDES', 'RC4', 'RC4Drop', 'Rabbit'].forEach(function (name) {
-                var c = C[name];
-                if (!c) return;
-                ['encrypt', 'decrypt'].forEach(function (op) {
-                  var orig = c[op];
-                  if (typeof orig !== 'function') return;
-                  c[op] = function (msg, key, cfg) {
-                    var r = orig.apply(this, arguments);
-                    try {
-                      var out;
-                      try { out = op === 'decrypt' ? r.toString(C.enc.Utf8) : String(r); }
-                      catch (e) { out = '(non-UTF8 output)'; }
-                      var k = wa(C, key);
-                      var note = null;
-                      if (k && k.note === 'string') {
-                        note = 'Key is a passphrase string. If no IV is given, CryptoJS derives the real key+IV (EVP_BytesToKey/MD5) from this passphrase and the salt stored in the ciphertext.';
-                      }
-                      send({
-                        src: 'CryptoJS',
-                        op: op,
-                        alg: name,
-                        key: k,
-                        iv: wa(C, cfg && cfg.iv),
-                        note: note,
-                        out: preview(out)
-                      });
-                    } catch (e) {}
-                    return r;
-                  };
-                });
+            var CJS_NAMES = ['AES', 'DES', 'TripleDES', 'RC4', 'RC4Drop', 'Rabbit'];
+
+            // Wrap encrypt/decrypt of ONE cipher helper (e.g. CryptoJS.AES).
+            function hookCipher(C, name, c) {
+              if (!c || (typeof c !== 'object' && typeof c !== 'function') || c.__khc) return;
+              try { Object.defineProperty(c, '__khc', { value: 1 }); } catch (e) { return; }
+              ['encrypt', 'decrypt'].forEach(function (op) {
+                var orig = c[op];
+                if (typeof orig !== 'function') return;
+                c[op] = function (msg, key, cfg) {
+                  var r = orig.apply(this, arguments);
+                  try {
+                    var out;
+                    try { out = op === 'decrypt' ? r.toString(C.enc.Utf8) : String(r); }
+                    catch (e) { out = '(non-UTF8 output)'; }
+                    var k = wa(C, key);
+                    var note = null;
+                    if (k && k.note === 'string') {
+                      note = 'Key is a passphrase string. If no IV is given, CryptoJS derives the real key+IV (EVP_BytesToKey/MD5) from this passphrase and the salt stored in the ciphertext.';
+                    }
+                    send({
+                      src: 'CryptoJS',
+                      op: op,
+                      alg: name,
+                      key: k,
+                      iv: wa(C, cfg && cfg.iv),
+                      note: note,
+                      out: preview(out)
+                    });
+                  } catch (e) {}
+                  return r;
+                };
               });
             }
 
+            function hookCJS(C) {
+              if (!C || !C.enc) return;
+              CJS_NAMES.forEach(function (n) { if (C[n]) hookCipher(C, n, C[n]); });
+            }
+
+            // 1) Library exposed as window.CryptoJS
             var _cj = window.CryptoJS;
             try {
               Object.defineProperty(window, 'CryptoJS', {
@@ -311,6 +326,27 @@ jobs:
             } catch (e) {}
             if (_cj) { try { hookCJS(_cj); } catch (e) {} }
             setInterval(function () { try { hookCJS(window.CryptoJS); } catch (e) {} }, 500);
+
+            // 2) Library BUNDLED (webpack/vite) and not on window: crypto-js runs
+            //    `C.AES = ...` on a plain object. An accessor on Object.prototype makes
+            //    that assignment call us, so we get the object and can wrap it.
+            CJS_NAMES.forEach(function (name) {
+              try {
+                Object.defineProperty(Object.prototype, name, {
+                  configurable: true,
+                  enumerable: false,
+                  get: function () { return undefined; },
+                  set: function (v) {
+                    try {
+                      Object.defineProperty(this, name, {
+                        value: v, writable: true, configurable: true, enumerable: true
+                      });
+                    } catch (e) {}
+                    try { if (this && this.enc && v) hookCipher(this, name, v); } catch (e) {}
+                  }
+                });
+              } catch (e) {}
+            });
 
             /* ---------------- Base64 image URLs (atob) ---------------- */
             var seen = {};
@@ -324,6 +360,24 @@ jobs:
               } catch (e) {}
               return r;
             };
+
+            /* ---------------- Blob images created after decrypting ---------------- */
+            if (window.URL && URL.createObjectURL) {
+              var oCOU = URL.createObjectURL;
+              var blobCount = 0;
+              URL.createObjectURL = function (obj) {
+                var u = oCOU.apply(this, arguments);
+                try {
+                  if (blobCount++ < 30) {
+                    send({
+                      src: 'blob', op: 'createObjectURL', alg: '',
+                      out: ((obj && obj.type) || 'blob') + ' ' + ((obj && obj.size) || 0) + ' bytes -> ' + u
+                    });
+                  }
+                } catch (e) {}
+                return u;
+              };
+            }
           })();
           KS_EOF
           cat > app/src/main/java/com/example/keysniffer/MainActivity.java <<'KS_EOF'
@@ -480,6 +534,20 @@ jobs:
                   }
 
                   web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          // Diagnostic: is the hook present, and is the bridge visible to the page?
+                          view.evaluateJavascript(
+                                  "(window.__kh ? 'HOOK_OK' : 'HOOK_MISSING') + ' bridge=' + (typeof KH)",
+                                  value -> {
+                                      String v = value == null ? "" : value.replace("\"", "");
+                                      append("[page loaded] " + v + "  docStart=" + docStartInjected);
+                                      if (v.startsWith("HOOK_MISSING")) {
+                                          view.evaluateJavascript(hookJs, null); // late injection
+                                      }
+                                  });
+                      }
+
                       @Override
                       public void onPageStarted(WebView view, String url, Bitmap favicon) {
                           if (!docStartInjected) {
