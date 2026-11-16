@@ -1,29 +1,19 @@
 name: Build Web APK
 
 # =====================================================================
-#  WebView APK builder  (TV + phone, remote-controllable)
-#  - Opens BASE_URL inside the app, ALWAYS desktop mode (same layout width)
-#  - Full-screen video (landscape, immersive, notch/punch-hole safe)
+#  WebView APK builder  (TV-only experience + Mobile Popup Test Remote)
+#  - Opens BASE_URL inside the app, ALWAYS 1280px TV/desktop layout
+#  - Full-screen immersive landscape video + Widevine/cookie support
 #  - Block list (Block.json) downloaded at every start + cached
-#  - NEW: Android TV support (Leanback launcher, no touchscreen needed)
-#  - NEW: Spatial D-pad navigation injected into the page
-#         (up/down/left/right moves focus between cards, rows, buttons,
-#          auto-scrolls carousels and pages, OK = click)
-#  - NEW: Video remote controls in fullscreen
-#         (left/right = seek 10s, OK = play/pause, up/down = volume)
-#  - NEW: On-screen test remote (Up/Down/Left/Right/OK/Back) shown on
-#         phones so you can test everything without a TV. Hidden on TV.
-#         Hold an arrow to repeat. Tap "Remote" header to collapse it.
+#  - Android TV: Leanback launcher, real D-pad & media keys mapped to
+#    spatial navigation & video controls (no on-screen remote shown)
+#  - Mobile (for testing): Forced TV landscape + draggable popup remote
+#    overlay with Touch-Lock ("Touch: OFF") to simulate TV strictly
 #
 #  HOW TO USE:
 #   1. Save as  .github/workflows/build-apk.yml
 #   2. Edit the env values below (or Actions -> Run workflow)
 #   3. Download the APK from the run's "Artifacts"
-#
-#  TEST WITHOUT A REMOTE (adb):
-#   adb shell input keyevent KEYCODE_DPAD_RIGHT   (also LEFT/UP/DOWN)
-#   adb shell input keyevent KEYCODE_DPAD_CENTER  (OK)
-#   adb shell input keyevent KEYCODE_BACK
 # =====================================================================
 
 on:
@@ -39,7 +29,7 @@ on:
         description: "Package name (e.g. com.example.webapp)"
         required: false
       show_remote:
-        description: "Show on-screen test remote on phones (true/false)"
+        description: "Show popup test remote on mobile phones (true/false)"
         required: false
         default: 'true'
   push:
@@ -152,7 +142,7 @@ jobs:
           }
           EOF
 
-          # ---------- AndroidManifest.xml (phone + Android TV) ----------
+          # ---------- AndroidManifest.xml (TV + Mobile testing) ----------
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -166,7 +156,7 @@ jobs:
                   android:banner="__ICON_REF__"
                   android:hardwareAccelerated="true"
                   android:usesCleartextTraffic="true"
-                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -183,7 +173,7 @@ jobs:
           </manifest>
           EOF
 
-          # ---------- assets/nav.js : spatial D-pad navigation ----------
+          # ---------- assets/nav.js : spatial TV D-pad navigation ----------
           cat > app/src/main/assets/nav.js <<'JSEOF'
           (function () {
             if (window.__tvnav) return;
@@ -194,10 +184,54 @@ jobs:
             var STRONG = 'a[href],button,input,select,textarea,[role=button],[role=link]';
             var EDIT = /^(INPUT|TEXTAREA|SELECT)$/;
 
-            var st = document.createElement('style');
-            st.textContent = '.__tvf{outline:4px solid #fff !important;outline-offset:3px !important;'
-              + 'box-shadow:0 0 0 8px rgba(30,128,255,.9) !important;border-radius:8px}';
-            (document.head || document.documentElement).appendChild(st);
+            var ring = null;
+            var osd = null;
+            var osdTimer = null;
+
+            function ensureRing() {
+              if (ring && document.contains(ring)) return ring;
+              ring = document.createElement('div');
+              ring.id = '__tv_ring';
+              ring.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;display:none;'
+                + 'border:3px solid #fff;border-radius:8px;box-sizing:border-box;'
+                + 'box-shadow:0 0 0 3px #1e80ff,0 0 18px rgba(30,128,255,.85);'
+                + 'transition:left 80ms ease-out,top 80ms ease-out,width 80ms ease-out,height 80ms ease-out;';
+              (document.body || document.documentElement).appendChild(ring);
+              return ring;
+            }
+
+            function syncRing() {
+              if (!cur || !document.contains(cur)) {
+                if (ring) ring.style.display = 'none';
+                return;
+              }
+              var r = cur.getBoundingClientRect();
+              if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.top > vh() || r.right < 0 || r.left > vw()) {
+                if (ring) ring.style.display = 'none';
+                return;
+              }
+              var el = ensureRing();
+              el.style.display = 'block';
+              el.style.left = Math.max(0, r.left - 3) + 'px';
+              el.style.top = Math.max(0, r.top - 3) + 'px';
+              el.style.width = (r.width + 6) + 'px';
+              el.style.height = (r.height + 6) + 'px';
+            }
+
+            function showOsd(txt) {
+              if (!osd || !document.contains(osd)) {
+                osd = document.createElement('div');
+                osd.style.cssText = 'position:fixed;top:24px;right:24px;z-index:2147483647;'
+                  + 'background:rgba(15,17,24,.88);color:#fff;font:600 16px/1.2 sans-serif;'
+                  + 'padding:10px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.25);'
+                  + 'pointer-events:none;box-shadow:0 6px 20px rgba(0,0,0,.45);';
+                (document.body || document.documentElement).appendChild(osd);
+              }
+              osd.textContent = txt;
+              osd.style.display = 'block';
+              clearTimeout(osdTimer);
+              osdTimer = setTimeout(function () { if (osd) osd.style.display = 'none'; }, 1200);
+            }
 
             function vw() { return window.innerWidth; }
             function vh() { return window.innerHeight; }
@@ -207,6 +241,7 @@ jobs:
               var W = vw(), H = vh();
               for (var i = 0; i < all.length; i++) {
                 var el = all[i];
+                if (el === ring || el === osd) continue;
                 var strong = el.matches(SEL);
                 var r = el.getBoundingClientRect();
                 if (r.width < 8 || r.height < 8) continue;
@@ -215,13 +250,13 @@ jobs:
                 if (cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none' || cs.opacity === '0') continue;
                 if (el.disabled) continue;
                 var ok = strong;
-                if (!ok && r.width >= 40 && r.height >= 24 && cs.cursor === 'pointer') {
+                if (!ok && r.width >= 20 && r.height >= 20 && cs.cursor === 'pointer') {
+                  if (r.width > W * 0.9 && r.height > H * 0.85) continue;
                   var p = el.parentElement;
                   ok = !(p && getComputedStyle(p).cursor === 'pointer');
                 }
                 if (ok) out.push(el);
               }
-              // drop wrappers that contain other candidates / inner junk inside link cards
               return out.filter(function (a) {
                 for (var j = 0; j < out.length; j++) {
                   var b = out[j];
@@ -239,7 +274,7 @@ jobs:
               var p, s;
               if (d === 'left' || d === 'right') {
                 var ov = Math.min(c.bottom, r.bottom) - Math.max(c.top, r.top);
-                if (ov < Math.min(c.height, r.height) * 0.3) return -1; // stay in the same row
+                if (ov < Math.min(c.height, r.height) * 0.3) return -1;
                 if (d === 'right') { if (rx <= cx + 2 || r.left < c.left + 2) return -1; p = Math.max(0, r.left - c.right); }
                 else { if (rx >= cx - 2 || r.right > c.right - 2) return -1; p = Math.max(0, c.left - r.right); }
                 s = Math.abs(ry - cy);
@@ -258,18 +293,23 @@ jobs:
             }
 
             function setCur(el, d) {
+              if (!el) return;
               if (cur && cur !== el) {
-                cur.classList.remove('__tvf');
                 fire(cur, ['mouseout', 'mouseleave']);
+                if (EDIT.test(cur.tagName)) { try { cur.blur(); } catch (e) {} }
               }
               cur = el;
-              el.classList.add('__tvf');
               fire(el, ['pointerover', 'mouseover', 'mouseenter', 'mousemove']);
-              try { el.focus({ preventScroll: true }); } catch (e) {}
+              if (!EDIT.test(el.tagName)) {
+                try { el.focus({ preventScroll: true }); } catch (e) {}
+              }
               var vert = (d === 'up' || d === 'down');
               try {
                 el.scrollIntoView({ block: vert ? 'center' : 'nearest', inline: vert ? 'nearest' : 'center', behavior: 'auto' });
               } catch (e) { el.scrollIntoView(); }
+              syncRing();
+              setTimeout(syncRing, 60);
+              setTimeout(syncRing, 200);
             }
 
             function firstInView(list) {
@@ -319,53 +359,70 @@ jobs:
               });
               if (best) { setCur(best, d); return; }
               if (!retried && scrollFor(d)) {
-                setTimeout(function () { move(d, true); }, 320); // lazy rows / carousels render after scroll
+                setTimeout(function () { move(d, true); }, 320);
               }
             }
 
             function ok() {
-              if (!cur || !document.contains(cur)) return;
-              if (EDIT.test(cur.tagName) && cur.tagName !== 'SELECT') { cur.focus(); return; }
+              if (!cur || !document.contains(cur)) {
+                var list = cands();
+                if (list.length) setCur(firstInView(list), 'down');
+                return '';
+              }
+              if (EDIT.test(cur.tagName) && cur.tagName !== 'SELECT') {
+                cur.focus();
+                cur.click();
+                return 'input';
+              }
               fire(cur, ['pointerdown', 'mousedown', 'pointerup', 'mouseup']);
               cur.click();
+              setTimeout(syncRing, 120);
+              return 'ok';
             }
 
-            window.__tvnav = function (c) { if (c === 'ok') ok(); else move(c, false); };
+            window.__tvnav = function (c) {
+              if (c === 'ok') return ok();
+              move(c, false);
+              return 'move';
+            };
 
-            // wake up player controls + control the biggest <video>
             window.__tvVid = function (c) {
               var vs = [].slice.call(document.querySelectorAll('video'));
               if (!vs.length) return;
               vs.sort(function (a, b) { return (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight); });
               var v = vs[0];
-              fire(v, ['mousemove']);
-              if (document.body) fire(document.body, ['mousemove']);
+              fire(v, ['mousemove', 'pointermove']);
+              if (document.body) fire(document.body, ['mousemove', 'pointermove']);
               var dur = isFinite(v.duration) ? v.duration : 1e9;
-              if (c === 'left') v.currentTime = Math.max(0, v.currentTime - 10);
-              else if (c === 'right') v.currentTime = Math.min(dur, v.currentTime + 10);
-              else if (c === 'up') v.volume = Math.min(1, v.volume + 0.1);
-              else if (c === 'down') v.volume = Math.max(0, v.volume - 0.1);
-              else if (c === 'ok' || c === 'toggle') { if (v.paused) v.play(); else v.pause(); }
+              if (c === 'left') {
+                v.currentTime = Math.max(0, v.currentTime - 10);
+                showOsd('\u23EA -10s');
+              } else if (c === 'right') {
+                v.currentTime = Math.min(dur, v.currentTime + 10);
+                showOsd('\u23E9 +10s');
+              } else if (c === 'up') {
+                v.volume = Math.min(1, v.volume + 0.1);
+                showOsd('\uD83D\uDD0A ' + Math.round(v.volume * 100) + '%');
+              } else if (c === 'down') {
+                v.volume = Math.max(0, v.volume - 0.1);
+                showOsd('\uD83D\uDD09 ' + Math.round(v.volume * 100) + '%');
+              } else if (c === 'ok' || c === 'toggle') {
+                if (v.paused) {
+                  try { v.play(); } catch (e) {}
+                  showOsd('\u25B6 Play');
+                } else {
+                  v.pause();
+                  showOsd('\u23F8 Pause');
+                }
+              }
             };
 
-            // real remote / keyboard keys reaching the page
-            window.addEventListener('keydown', function (e) {
-              var map = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
-              var t = e.target;
-              var ed = t && (t.isContentEditable || EDIT.test(t.tagName));
-              if (map[e.key]) {
-                if (ed && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
-                e.preventDefault(); e.stopPropagation();
-                move(map[e.key], false);
-              } else if (e.key === 'Enter' && cur && !ed) {
-                e.preventDefault(); e.stopPropagation();
-                ok();
-              }
-            }, true);
+            window.addEventListener('scroll', syncRing, true);
+            window.addEventListener('resize', syncRing);
+            setInterval(function () { if (cur) syncRing(); }, 180);
 
-            // touching the screen hides the TV focus ring
             window.addEventListener('touchstart', function () {
-              if (cur) { cur.classList.remove('__tvf'); cur = null; }
+              if (cur) { cur = null; syncRing(); }
             }, { passive: true });
           })();
           JSEOF
@@ -399,6 +456,10 @@ jobs:
           import android.view.Window;
           import android.view.WindowInsets;
           import android.view.WindowManager;
+          import android.view.inputmethod.InputMethodManager;
+          import android.webkit.CookieManager;
+          import android.webkit.PermissionRequest;
+          import android.webkit.ValueCallback;
           import android.webkit.WebChromeClient;
           import android.webkit.WebResourceRequest;
           import android.webkit.WebResourceResponse;
@@ -428,7 +489,6 @@ jobs:
 
           public class MainActivity extends Activity {
 
-              // Injected by the GitHub workflow
               private static final String BASE_URL  = "__BASE_URL__";
               private static final String BLOCK_API = "__BLOCK_API__";
               private static final boolean SHOW_REMOTE_ON_PHONE = "__SHOW_REMOTE__".equals("true");
@@ -438,8 +498,8 @@ jobs:
                       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                       + "Chrome/124.0.0.0 Safari/537.36";
 
-              // Layout width (px) forced on every device. Bigger = more content, smaller text.
-              private static final int DESKTOP_WIDTH = 1024;
+              // 1280px TV/desktop width forced on all devices
+              private static final int DESKTOP_WIDTH = 1280;
 
               private static final String VIEWPORT_JS =
                       "(function(){if(window.__dw)return;window.__dw=1;"
@@ -452,8 +512,8 @@ jobs:
                       + "{childList:true,subtree:true,attributes:true,attributeFilter:['content']});})();";
 
               private FrameLayout frame;
-              private FrameLayout content;
-              private FrameLayout fullscreenContainer;
+              private TouchGateLayout content;
+              private TouchGateLayout fullscreenContainer;
               private WebView web;
               private SharedPreferences prefs;
               private final Handler handler = new Handler(Looper.getMainLooper());
@@ -463,18 +523,37 @@ jobs:
               private int padL, padT, padR, padB;
 
               private String navJs = "";
-              private LinearLayout remotePanel;
-              private TextView remoteHeader;
+              private FrameLayout remoteOverlay;
+              private LinearLayout remotePopup;
+              private TextView remotePill;
+              private TextView touchToggleBtn;
               private Runnable repeater;
+              private boolean blockWebTouch = true;
 
               private final Set<String> blockDomains = Collections.synchronizedSet(new HashSet<String>());
               private final Set<String> blockUrls = Collections.synchronizedSet(new HashSet<String>());
+
+              // Gates touches to simulate no-touchscreen TV when testing on mobile
+              private class TouchGateLayout extends FrameLayout {
+                  TouchGateLayout(Context c) { super(c); }
+                  @Override public boolean onInterceptTouchEvent(MotionEvent ev) {
+                      return !isTv() && blockWebTouch;
+                  }
+                  @Override public boolean onTouchEvent(MotionEvent ev) {
+                      return !isTv() && blockWebTouch;
+                  }
+              }
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   prefs = getSharedPreferences("blocklist", MODE_PRIVATE);
                   navJs = readAsset("nav.js");
+
+                  // Force landscape on mobile to match TV aspect ratio
+                  if (!isTv()) {
+                      setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                  }
 
                   Window w = getWindow();
                   w.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
@@ -491,14 +570,15 @@ jobs:
                   frame = new FrameLayout(this);
                   frame.setBackgroundColor(Color.BLACK);
 
-                  content = new FrameLayout(this);
+                  content = new TouchGateLayout(this);
                   web = new WebView(this);
+                  web.setBackgroundColor(Color.BLACK);
                   web.setFocusable(true);
                   web.setFocusableInTouchMode(true);
                   content.addView(web, new FrameLayout.LayoutParams(
                           FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-                  fullscreenContainer = new FrameLayout(this);
+                  fullscreenContainer = new TouchGateLayout(this);
                   fullscreenContainer.setBackgroundColor(Color.BLACK);
                   fullscreenContainer.setVisibility(View.GONE);
 
@@ -507,28 +587,25 @@ jobs:
                   frame.addView(fullscreenContainer, new FrameLayout.LayoutParams(
                           FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-                  // on-screen test remote (phones only, always on top)
+                  // Popup overlay test remote: shown ONLY on non-TV devices
                   if (SHOW_REMOTE_ON_PHONE && !isTv()) {
-                      frame.addView(buildRemote());
+                      frame.addView(buildPopupRemote());
                   }
                   setContentView(frame);
 
-                  applyNormalSystemUi();
+                  applyFullscreenSystemUi();
 
                   frame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
                       @Override
                       public WindowInsets onApplyWindowInsets(View v, WindowInsets in) {
-                          int l = in.getSystemWindowInsetLeft();
-                          int t = in.getSystemWindowInsetTop();
-                          int r = in.getSystemWindowInsetRight();
-                          int b = in.getSystemWindowInsetBottom();
-                          if (Build.VERSION.SDK_INT >= 28) {
+                          int l = 0, t = 0, r = 0, b = 0;
+                          if (!isTv() && Build.VERSION.SDK_INT >= 28) {
                               DisplayCutout dc = in.getDisplayCutout();
                               if (dc != null) {
-                                  l = Math.max(l, dc.getSafeInsetLeft());
-                                  t = Math.max(t, dc.getSafeInsetTop());
-                                  r = Math.max(r, dc.getSafeInsetRight());
-                                  b = Math.max(b, dc.getSafeInsetBottom());
+                                  l = dc.getSafeInsetLeft();
+                                  t = dc.getSafeInsetTop();
+                                  r = dc.getSafeInsetRight();
+                                  b = dc.getSafeInsetBottom();
                               }
                           }
                           padL = l; padT = t; padR = r; padB = b;
@@ -537,6 +614,10 @@ jobs:
                       }
                   });
                   frame.requestApplyInsets();
+
+                  CookieManager cm = CookieManager.getInstance();
+                  cm.setAcceptCookie(true);
+                  cm.setAcceptThirdPartyCookies(web, true);
 
                   WebSettings s = web.getSettings();
                   s.setJavaScriptEnabled(true);
@@ -567,13 +648,28 @@ jobs:
                           fullscreenContainer.setVisibility(View.VISIBLE);
                           content.setVisibility(View.INVISIBLE);
                           getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                          setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                           applyFullscreenSystemUi();
                       }
 
                       @Override
                       public void onHideCustomView() {
                           exitCustomView();
+                      }
+
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          runOnUiThread(new Runnable() {
+                              @Override public void run() {
+                                  String[] res = request.getResources();
+                                  for (String r : res) {
+                                      if (PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID.equals(r)) {
+                                          request.grant(new String[]{PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID});
+                                          return;
+                                      }
+                                  }
+                                  request.deny();
+                              }
+                          });
                       }
 
                       @Override
@@ -657,7 +753,7 @@ jobs:
                   web.requestFocus();
               }
 
-              // ---------------- remote control ----------------
+              // ---------------- TV & Popup Remote Control ----------------
 
               private boolean isTv() {
                   UiModeManager um = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
@@ -668,51 +764,64 @@ jobs:
                   return Math.round(v * getResources().getDisplayMetrics().density);
               }
 
-              // Single entry point for on-screen remote + real keys while a video is fullscreen
+              private void vid(String cmd) {
+                  web.evaluateJavascript("window.__tvVid&&window.__tvVid('" + cmd + "')", null);
+              }
+
+              // Unified action handler for real TV remotes AND mobile popup remote
               private void press(String cmd) {
                   if ("back".equals(cmd)) { onBackPressed(); return; }
+                  if ("reload".equals(cmd)) { web.reload(); return; }
+                  if ("toggle".equals(cmd)) { vid("toggle"); return; }
                   if (customView != null) {
-                      web.evaluateJavascript("window.__tvVid&&window.__tvVid('" + cmd + "')", null);
+                      vid(cmd);
                   } else {
-                      web.evaluateJavascript("window.__tvnav&&window.__tvnav('" + cmd + "')", null);
+                      web.evaluateJavascript("window.__tvnav&&window.__tvnav('" + cmd + "')", new ValueCallback<String>() {
+                          @Override public void onReceiveValue(String val) {
+                              if ("\"input\"".equals(val)) {
+                                  InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                                  if (imm != null) imm.showSoftInput(web, InputMethodManager.SHOW_IMPLICIT);
+                              }
+                          }
+                      });
                   }
               }
 
               @Override
               public boolean dispatchKeyEvent(KeyEvent e) {
-                  // While a video is fullscreen the WebView is hidden and gets no keys,
-                  // so we map the remote straight to the player.
-                  if (customView != null) {
-                      String cmd = null;
-                      switch (e.getKeyCode()) {
-                          case KeyEvent.KEYCODE_DPAD_LEFT:  cmd = "left"; break;
-                          case KeyEvent.KEYCODE_DPAD_RIGHT: cmd = "right"; break;
-                          case KeyEvent.KEYCODE_DPAD_UP:    cmd = "up"; break;
-                          case KeyEvent.KEYCODE_DPAD_DOWN:  cmd = "down"; break;
-                          case KeyEvent.KEYCODE_DPAD_CENTER:
-                          case KeyEvent.KEYCODE_ENTER:
-                          case KeyEvent.KEYCODE_NUMPAD_ENTER: cmd = "ok"; break;
-                          case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                          case KeyEvent.KEYCODE_MEDIA_PLAY:
-                          case KeyEvent.KEYCODE_MEDIA_PAUSE: cmd = "toggle"; break;
-                          case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: cmd = "right"; break;
-                          case KeyEvent.KEYCODE_MEDIA_REWIND: cmd = "left"; break;
-                          default: break;
+                  String cmd = null;
+                  boolean isMedia = false;
+                  switch (e.getKeyCode()) {
+                      case KeyEvent.KEYCODE_DPAD_LEFT:  cmd = "left"; break;
+                      case KeyEvent.KEYCODE_DPAD_RIGHT: cmd = "right"; break;
+                      case KeyEvent.KEYCODE_DPAD_UP:    cmd = "up"; break;
+                      case KeyEvent.KEYCODE_DPAD_DOWN:  cmd = "down"; break;
+                      case KeyEvent.KEYCODE_DPAD_CENTER:
+                      case KeyEvent.KEYCODE_ENTER:
+                      case KeyEvent.KEYCODE_NUMPAD_ENTER: cmd = "ok"; break;
+                      case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                      case KeyEvent.KEYCODE_MEDIA_PLAY:
+                      case KeyEvent.KEYCODE_MEDIA_PAUSE: cmd = "toggle"; isMedia = true; break;
+                      case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: cmd = "right"; isMedia = true; break;
+                      case KeyEvent.KEYCODE_MEDIA_REWIND: cmd = "left"; isMedia = true; break;
+                      default: break;
+                  }
+                  if (cmd != null) {
+                      if (e.getAction() == KeyEvent.ACTION_DOWN) {
+                          if (isMedia) vid(cmd);
+                          else press(cmd);
                       }
-                      if (cmd != null) {
-                          if (e.getAction() == KeyEvent.ACTION_DOWN) press(cmd);
-                          return true;
-                      }
+                      return true;
                   }
                   return super.dispatchKeyEvent(e);
               }
 
-              private Button remoteButton(String label, final String cmd, final boolean repeat, int w) {
+              private Button remoteButton(String label, final String cmd, final boolean repeat, int w, int h) {
                   Button b = new Button(this);
                   b.setText(label);
                   b.setAllCaps(false);
                   b.setTextColor(Color.WHITE);
-                  b.setTextSize(16);
+                  b.setTextSize(14);
                   b.setPadding(0, 0, 0, 0);
                   b.setMinWidth(0);
                   b.setMinHeight(0);
@@ -720,11 +829,11 @@ jobs:
                   b.setMinimumHeight(0);
                   b.setFocusable(false);
                   GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(Color.argb(210, 40, 40, 48));
+                  bg.setColor("ok".equals(cmd) ? Color.argb(230, 30, 128, 255) : Color.argb(220, 42, 44, 56));
                   bg.setCornerRadius(dp(10));
-                  bg.setStroke(dp(1), Color.argb(160, 255, 255, 255));
+                  bg.setStroke(dp(1), Color.argb(120, 255, 255, 255));
                   b.setBackground(bg);
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(46));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(h));
                   lp.setMargins(dp(3), dp(3), dp(3), dp(3));
                   b.setLayoutParams(lp);
                   b.setOnTouchListener(new View.OnTouchListener() {
@@ -732,17 +841,17 @@ jobs:
                       public boolean onTouch(final View v, MotionEvent ev) {
                           switch (ev.getActionMasked()) {
                               case MotionEvent.ACTION_DOWN:
-                                  v.setAlpha(0.5f);
+                                  v.setAlpha(0.55f);
                                   press(cmd);
                                   if (repeat) {
                                       stopRepeat();
                                       repeater = new Runnable() {
                                           @Override public void run() {
                                               press(cmd);
-                                              handler.postDelayed(this, 140);
+                                              handler.postDelayed(this, 130);
                                           }
                                       };
-                                      handler.postDelayed(repeater, 400);
+                                      handler.postDelayed(repeater, 380);
                                   }
                                   return true;
                               case MotionEvent.ACTION_UP:
@@ -769,70 +878,178 @@ jobs:
                   return r;
               }
 
-              private View buildRemote() {
-                  LinearLayout box = new LinearLayout(this);
-                  box.setOrientation(LinearLayout.VERTICAL);
-                  box.setGravity(Gravity.CENTER_HORIZONTAL);
-
-                  remoteHeader = new TextView(this);
-                  remoteHeader.setTextColor(Color.WHITE);
-                  remoteHeader.setTextSize(12);
-                  remoteHeader.setGravity(Gravity.CENTER);
-                  remoteHeader.setPadding(dp(14), dp(4), dp(14), dp(4));
-                  GradientDrawable hbg = new GradientDrawable();
-                  hbg.setColor(Color.argb(210, 20, 90, 200));
-                  hbg.setCornerRadius(dp(14));
-                  remoteHeader.setBackground(hbg);
-
-                  remotePanel = new LinearLayout(this);
-                  remotePanel.setOrientation(LinearLayout.VERTICAL);
-                  remotePanel.setGravity(Gravity.CENTER_HORIZONTAL);
-                  GradientDrawable pbg = new GradientDrawable();
-                  pbg.setColor(Color.argb(120, 0, 0, 0));
-                  pbg.setCornerRadius(dp(14));
-                  remotePanel.setBackground(pbg);
-                  remotePanel.setPadding(dp(4), dp(4), dp(4), dp(4));
-
-                  LinearLayout r1 = row();
-                  r1.addView(remoteButton("\u25B2", "up", true, 46));
-                  LinearLayout r2 = row();
-                  r2.addView(remoteButton("\u25C0", "left", true, 46));
-                  r2.addView(remoteButton("OK", "ok", false, 46));
-                  r2.addView(remoteButton("\u25B6", "right", true, 46));
-                  LinearLayout r3 = row();
-                  r3.addView(remoteButton("\u25BC", "down", true, 46));
-                  LinearLayout r4 = row();
-                  r4.addView(remoteButton("\u21A9 Back", "back", false, 100));
-                  remotePanel.addView(r1);
-                  remotePanel.addView(r2);
-                  remotePanel.addView(r3);
-                  remotePanel.addView(r4);
-
-                  box.addView(remoteHeader);
-                  box.addView(remotePanel);
-                  box.setAlpha(0.92f);
-
-                  boolean open = prefs.getBoolean("remote_open", true);
-                  setRemoteOpen(open);
-                  remoteHeader.setOnClickListener(new View.OnClickListener() {
-                      @Override public void onClick(View v) {
-                          boolean now = remotePanel.getVisibility() != View.VISIBLE;
-                          setRemoteOpen(now);
-                          prefs.edit().putBoolean("remote_open", now).apply();
+              private void attachDrag(View handle, final Runnable onTap) {
+                  handle.setOnTouchListener(new View.OnTouchListener() {
+                      float downX, downY, startTx, startTy;
+                      boolean moved;
+                      @Override
+                      public boolean onTouch(View v, MotionEvent ev) {
+                          switch (ev.getActionMasked()) {
+                              case MotionEvent.ACTION_DOWN:
+                                  downX = ev.getRawX();
+                                  downY = ev.getRawY();
+                                  startTx = remoteOverlay.getTranslationX();
+                                  startTy = remoteOverlay.getTranslationY();
+                                  moved = false;
+                                  return true;
+                              case MotionEvent.ACTION_MOVE:
+                                  float dx = ev.getRawX() - downX;
+                                  float dy = ev.getRawY() - downY;
+                                  if (Math.hypot(dx, dy) > dp(6)) moved = true;
+                                  if (moved) {
+                                      setOverlayTranslation(startTx + dx, startTy + dy);
+                                  }
+                                  return true;
+                              case MotionEvent.ACTION_UP:
+                              case MotionEvent.ACTION_CANCEL:
+                                  if (!moved && onTap != null) onTap.run();
+                                  return true;
+                          }
+                          return true;
                       }
                   });
+              }
+
+              private void setOverlayTranslation(float tx, float ty) {
+                  float minTx = -remoteOverlay.getLeft();
+                  float maxTx = frame.getWidth() - remoteOverlay.getRight();
+                  float minTy = -remoteOverlay.getTop();
+                  float maxTy = frame.getHeight() - remoteOverlay.getBottom();
+                  if (minTx <= maxTx) tx = Math.max(minTx, Math.min(maxTx, tx));
+                  if (minTy <= maxTy) ty = Math.max(minTy, Math.min(maxTy, ty));
+                  remoteOverlay.setTranslationX(tx);
+                  remoteOverlay.setTranslationY(ty);
+              }
+
+              private View buildPopupRemote() {
+                  remoteOverlay = new FrameLayout(this);
+
+                  // Floating minimized pill
+                  remotePill = new TextView(this);
+                  remotePill.setText("\uD83D\uDCFA Remote");
+                  remotePill.setTextColor(Color.WHITE);
+                  remotePill.setTextSize(13);
+                  remotePill.setPadding(dp(14), dp(8), dp(14), dp(8));
+                  GradientDrawable pillBg = new GradientDrawable();
+                  pillBg.setColor(Color.argb(230, 22, 96, 210));
+                  pillBg.setCornerRadius(dp(20));
+                  pillBg.setStroke(dp(1), Color.argb(160, 255, 255, 255));
+                  remotePill.setBackground(pillBg);
+                  attachDrag(remotePill, new Runnable() {
+                      @Override public void run() { setPopupOpen(true); }
+                  });
+
+                  // Expanded popup remote window
+                  remotePopup = new LinearLayout(this);
+                  remotePopup.setOrientation(LinearLayout.VERTICAL);
+                  remotePopup.setGravity(Gravity.CENTER_HORIZONTAL);
+                  remotePopup.setPadding(dp(8), dp(8), dp(8), dp(8));
+                  GradientDrawable popBg = new GradientDrawable();
+                  popBg.setColor(Color.argb(225, 18, 20, 28));
+                  popBg.setCornerRadius(dp(16));
+                  popBg.setStroke(dp(1), Color.argb(110, 255, 255, 255));
+                  remotePopup.setBackground(popBg);
+
+                  // Top bar (drag handle + touch lock toggle + close)
+                  LinearLayout topBar = new LinearLayout(this);
+                  topBar.setOrientation(LinearLayout.HORIZONTAL);
+                  topBar.setGravity(Gravity.CENTER_VERTICAL);
+                  LinearLayout.LayoutParams topLp = new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                  topLp.setMargins(0, 0, 0, dp(6));
+                  topBar.setLayoutParams(topLp);
+
+                  TextView dragTitle = new TextView(this);
+                  dragTitle.setText("\uD83D\uDCFA TV Remote");
+                  dragTitle.setTextColor(Color.WHITE);
+                  dragTitle.setTextSize(12);
+                  dragTitle.setPadding(dp(4), dp(2), dp(8), dp(2));
+                  LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                          0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                  dragTitle.setLayoutParams(titleLp);
+                  attachDrag(dragTitle, null);
+
+                  touchToggleBtn = new TextView(this);
+                  touchToggleBtn.setTextColor(Color.WHITE);
+                  touchToggleBtn.setTextSize(11);
+                  touchToggleBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+                  updateTouchToggleUi();
+                  touchToggleBtn.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) {
+                          blockWebTouch = !blockWebTouch;
+                          updateTouchToggleUi();
+                      }
+                  });
+
+                  TextView closeBtn = new TextView(this);
+                  closeBtn.setText("\u2715");
+                  closeBtn.setTextColor(Color.WHITE);
+                  closeBtn.setTextSize(13);
+                  closeBtn.setPadding(dp(10), dp(3), dp(6), dp(3));
+                  closeBtn.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { setPopupOpen(false); }
+                  });
+
+                  topBar.addView(dragTitle);
+                  topBar.addView(touchToggleBtn);
+                  topBar.addView(closeBtn);
+
+                  // D-pad + media/back buttons
+                  LinearLayout r1 = row();
+                  r1.addView(remoteButton("\u25B2", "up", true, 50, 44));
+                  LinearLayout r2 = row();
+                  r2.addView(remoteButton("\u25C0", "left", true, 50, 44));
+                  r2.addView(remoteButton("OK", "ok", false, 52, 44));
+                  r2.addView(remoteButton("\u25B6", "right", true, 50, 44));
+                  LinearLayout r3 = row();
+                  r3.addView(remoteButton("\u25BC", "down", true, 50, 44));
+                  LinearLayout r4 = row();
+                  r4.addView(remoteButton("\u21A9 Back", "back", false, 68, 38));
+                  r4.addView(remoteButton("\u23EF", "toggle", false, 42, 38));
+                  r4.addView(remoteButton("\u27F3", "reload", false, 42, 38));
+
+                  remotePopup.addView(topBar);
+                  remotePopup.addView(r1);
+                  remotePopup.addView(r2);
+                  remotePopup.addView(r3);
+                  remotePopup.addView(r4);
+
+                  remoteOverlay.addView(remotePopup);
+                  remoteOverlay.addView(remotePill);
+
+                  boolean open = prefs.getBoolean("remote_open", true);
+                  setPopupOpen(open);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                           FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
                   lp.gravity = Gravity.BOTTOM | Gravity.END;
-                  lp.setMargins(0, 0, dp(28), dp(28));
-                  box.setLayoutParams(lp);
-                  return box;
+                  lp.setMargins(dp(16), dp(16), dp(20), dp(20));
+                  remoteOverlay.setLayoutParams(lp);
+                  return remoteOverlay;
               }
 
-              private void setRemoteOpen(boolean open) {
-                  remotePanel.setVisibility(open ? View.VISIBLE : View.GONE);
-                  remoteHeader.setText(open ? "Remote  \u25BE" : "Remote  \u25B4");
+              private void updateTouchToggleUi() {
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setCornerRadius(dp(8));
+                  if (blockWebTouch) {
+                      touchToggleBtn.setText("Touch: OFF");
+                      bg.setColor(Color.argb(210, 180, 50, 50));
+                  } else {
+                      touchToggleBtn.setText("Touch: ON");
+                      bg.setColor(Color.argb(210, 35, 145, 75));
+                  }
+                  touchToggleBtn.setBackground(bg);
+              }
+
+              private void setPopupOpen(boolean open) {
+                  remotePopup.setVisibility(open ? View.VISIBLE : View.GONE);
+                  remotePill.setVisibility(open ? View.GONE : View.VISIBLE);
+                  prefs.edit().putBoolean("remote_open", open).apply();
+                  remoteOverlay.post(new Runnable() {
+                      @Override public void run() {
+                          setOverlayTranslation(remoteOverlay.getTranslationX(), remoteOverlay.getTranslationY());
+                      }
+                  });
               }
 
               private String readAsset(String name) {
@@ -851,13 +1068,6 @@ jobs:
               }
 
               // ---------------- system UI helpers ----------------
-
-              private void applyNormalSystemUi() {
-                  getWindow().getDecorView().setSystemUiVisibility(
-                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-              }
 
               private void applyFullscreenSystemUi() {
                   getWindow().getDecorView().setSystemUiVisibility(
@@ -879,8 +1089,7 @@ jobs:
                   customCallback = null;
                   if (cb != null) cb.onCustomViewHidden();
                   getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-                  applyNormalSystemUi();
+                  applyFullscreenSystemUi();
                   content.setPadding(padL, padT, padR, padB);
                   frame.requestApplyInsets();
                   web.requestFocus();
@@ -889,10 +1098,7 @@ jobs:
               @Override
               public void onWindowFocusChanged(boolean hasFocus) {
                   super.onWindowFocusChanged(hasFocus);
-                  if (hasFocus) {
-                      if (customView != null) applyFullscreenSystemUi();
-                      else applyNormalSystemUi();
-                  }
+                  if (hasFocus) applyFullscreenSystemUi();
               }
 
               // ---------------- block list ----------------
@@ -992,7 +1198,7 @@ jobs:
           # ---------- inject values ----------
           export PKG="$PACKAGE_NAME"
           for f in app/build.gradle app/src/main/AndroidManifest.xml app/src/main/java/$PKG_PATH/MainActivity.java; do
-            perl -pi -e 's/__PKG__/$ENV{PKG}/g; s/__BASE_URL__/$ENV{BASE_URL}/g; s/__BLOCK_API__/$ENV{BLOCK_API}/g; s/__APP_NAME__/$ENV{APP_NAME}/g; s/__ICON_REF__/$ENV{ICON_REF}/g; s/__SHOW_REMOTE__/$ENV{SHOW_REMOTE}/g' "$f"
+            perl -pi -e 's|__PKG__|$ENV{PKG}|g; s|__BASE_URL__|$ENV{BASE_URL}|g; s|__BLOCK_API__|$ENV{BLOCK_API}|g; s|__APP_NAME__|$ENV{APP_NAME}|g; s|__ICON_REF__|$ENV{ICON_REF}|g; s|__SHOW_REMOTE__|$ENV{SHOW_REMOTE}|g' "$f"
           done
 
       - name: Build debug APK
